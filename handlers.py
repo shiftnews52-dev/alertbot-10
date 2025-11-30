@@ -6,13 +6,91 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from database import (
     add_user, get_user_lang, set_user_lang, is_paid, get_user_pairs,
     add_user_pair, remove_user_pair, get_balance, grant_access, revoke_access,
-    get_total_users, get_paid_users_count, get_all_paid_users, get_subscription_info
+    get_total_users, get_paid_users_count, get_all_paid_users, get_subscription_info,
+    db_pool
 )
 from config import ADMIN_IDS, SUPPORT_URL, DEFAULT_PAIRS
 from payment_handlers import show_payment_menu, handle_plan_selection, handle_payment_check
 import logging
 
 logger = logging.getLogger(__name__)
+
+# ==================== ВЫБОР ЯЗЫКА ====================
+async def show_language_selection(message: types.Message, invited_by: int = None):
+    """Показать выбор языка для нового пользователя"""
+    text = "🌍 <b>Choose your language / Выберите язык</b>\n\n"
+    text += "Please select your preferred language:\n"
+    text += "Пожалуйста, выберите предпочитаемый язык:"
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🇬🇧 English", callback_data=f"lang_en_{invited_by if invited_by else 0}"),
+        InlineKeyboardButton("🇷🇺 Русский", callback_data=f"lang_ru_{invited_by if invited_by else 0}")
+    )
+    
+    await message.answer(text, reply_markup=kb)
+
+async def handle_language_selection(call: types.CallbackQuery):
+    """Обработка выбора языка"""
+    user_id = call.from_user.id
+    data = call.data.split("_")
+    lang = data[1]  # en или ru
+    invited_by = int(data[2]) if data[2] != "0" else None
+    
+    # Добавляем пользователя с выбранным языком
+    await add_user(user_id, lang=lang, invited_by=invited_by)
+    
+    # Показываем приветствие
+    await call.message.delete()
+    await show_welcome_message(call.message, user_id, lang)
+    await call.answer()
+
+async def show_welcome_message(message: types.Message, user_id: int, lang: str):
+    """Показать приветственное сообщение после выбора языка"""
+    paid = await is_paid(user_id)
+    
+    # Приветствие
+    if lang == "en":
+        text = "🚀 <b>Welcome to Alpha Entry Bot!</b>\n\n"
+        text += "⏰ Hourly signals with automatic TP/SL\n\n"
+        text += "• 3-5 quality signals per day\n"
+        text += "• Multi-strategy (5+ indicators)\n"
+        text += "• Explanation for each entry\n"
+        text += "• Volume and volatility filtering\n\n"
+        
+        if paid:
+            sub_info = await get_subscription_info(user_id)
+            if sub_info and sub_info["is_active"]:
+                text += f"✅ <b>Premium active until</b>\n"
+                text += f"   {sub_info['expiry_date'].strftime('%d.%m.%Y')}\n"
+                text += f"   Days left: {sub_info['days_left']}\n\n"
+        else:
+            text += "🔓 Click <b>Get Access</b> to start receiving signals\n"
+            text += "🎁 Or enter a <b>Promo Code</b> for free access\n\n"
+        
+        text += "📖 Click <b>Guide</b> for details"
+    else:
+        text = "🚀 <b>Добро пожаловать в Alpha Entry Bot!</b>\n\n"
+        text += "⏰ Часовые сигналы с автоматическим TP/SL\n\n"
+        text += "• 3-5 качественных сигналов в день\n"
+        text += "• Мультистратегия (5+ индикаторов)\n"
+        text += "• Объяснение каждого входа\n"
+        text += "• Фильтрация по объёму и волатильности\n\n"
+        
+        if paid:
+            sub_info = await get_subscription_info(user_id)
+            if sub_info and sub_info["is_active"]:
+                text += f"✅ <b>Premium активна до</b>\n"
+                text += f"   {sub_info['expiry_date'].strftime('%d.%m.%Y')}\n"
+                text += f"   Осталось дней: {sub_info['days_left']}\n\n"
+        else:
+            text += "🔓 Жми <b>Открыть доступ</b> чтобы получать сигналы\n"
+            text += "🎁 Или введи <b>Промокод</b> для бесплатного доступа\n\n"
+        
+        text += "📖 Жми <b>Инструкция</b> для деталей"
+    
+    kb = await get_main_menu(user_id)
+    await message.answer(text, reply_markup=kb)
 
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 async def get_main_menu(user_id: int):
@@ -34,9 +112,14 @@ async def get_main_menu(user_id: int):
             )
             kb.add(KeyboardButton("📊 Statistics"))
         else:
-            kb.add(KeyboardButton("📖 Guide"))
-            kb.add(KeyboardButton("🔓 Get Access"))
-            kb.add(KeyboardButton("💬 Support"))
+            kb.add(
+                KeyboardButton("🔓 Get Access"),
+                KeyboardButton("🎁 Promo Code")
+            )
+            kb.add(
+                KeyboardButton("📖 Guide"),
+                KeyboardButton("💬 Support")
+            )
     else:
         if paid:
             kb.add(
@@ -49,9 +132,14 @@ async def get_main_menu(user_id: int):
             )
             kb.add(KeyboardButton("📊 Статистика"))
         else:
-            kb.add(KeyboardButton("📖 Инструкция"))
-            kb.add(KeyboardButton("🔓 Открыть доступ"))
-            kb.add(KeyboardButton("💬 Поддержка"))
+            kb.add(
+                KeyboardButton("🔓 Открыть доступ"),
+                KeyboardButton("🎁 Промокод")
+            )
+            kb.add(
+                KeyboardButton("📖 Инструкция"),
+                KeyboardButton("💬 Поддержка")
+            )
     
     return kb
 
@@ -66,10 +154,27 @@ async def cmd_start(message: types.Message):
     if args and args.isdigit():
         invited_by = int(args)
     
-    # Добавляем пользователя
-    await add_user(user_id, invited_by=invited_by)
-    
+    # Проверяем есть ли язык у пользователя
     lang = await get_user_lang(user_id)
+    
+    # Если язык не установлен (новый пользователь) - показываем выбор языка
+    if not lang or lang == "ru":  # Для существующих пользователей тоже можем показать выбор
+        # Проверяем, это новый пользователь или старый
+        conn = await db_pool.acquire()
+        try:
+            cursor = await conn.execute("SELECT id FROM users WHERE id=?", (user_id,))
+            existing_user = await cursor.fetchone()
+        finally:
+            await db_pool.release(conn)
+        
+        if not existing_user:
+            # Новый пользователь - показываем выбор языка
+            await show_language_selection(message, invited_by)
+            return
+    
+    # Добавляем пользователя (если ещё не добавлен)
+    await add_user(user_id, lang=lang, invited_by=invited_by)
+    
     paid = await is_paid(user_id)
     
     # Приветствие
@@ -233,6 +338,135 @@ async def show_support(message: types.Message):
     
     await message.answer(text, reply_markup=kb)
 
+# ==================== ПРОМОКОДЫ ====================
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+
+class PromoStates(StatesGroup):
+    waiting_for_promo = State()
+
+PROMO_CODES = {
+    "1550": {
+        "type": "full_access",
+        "duration_days": 365 * 100,  # Практически навсегда
+        "max_uses": None,  # Неограниченно
+        "description": "VIP промокод"
+    }
+}
+
+# Счётчик использований промокодов
+promo_usage = {}
+
+async def show_promo_input(message: types.Message, state: FSMContext):
+    """Показать запрос на ввод промокода"""
+    lang = await get_user_lang(message.from_user.id)
+    
+    if lang == "en":
+        text = "🎁 <b>Enter Promo Code</b>\n\n"
+        text += "Enter your promo code to get free access:\n\n"
+        text += "Send the code or click Cancel to return to menu."
+    else:
+        text = "🎁 <b>Введи промокод</b>\n\n"
+        text += "Введи промокод чтобы получить бесплатный доступ:\n\n"
+        text += "Отправь код или нажми Отмена чтобы вернуться в меню."
+    
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    cancel_text = "❌ Cancel" if lang == "en" else "❌ Отмена"
+    kb.add(KeyboardButton(cancel_text))
+    
+    await message.answer(text, reply_markup=kb)
+    await PromoStates.waiting_for_promo.set()
+
+async def handle_promo_code(message: types.Message, state: FSMContext):
+    """Обработка введённого промокода"""
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    promo_code = message.text.strip()
+    
+    # Проверка на отмену
+    if promo_code in ["❌ Cancel", "❌ Отмена"]:
+        await state.finish()
+        kb = await get_main_menu(user_id)
+        cancel_text = "Cancelled" if lang == "en" else "Отменено"
+        await message.answer(cancel_text, reply_markup=kb)
+        return
+    
+    # Проверяем промокод
+    if promo_code in PROMO_CODES:
+        promo = PROMO_CODES[promo_code]
+        
+        # Проверяем лимит использований
+        if promo["max_uses"] is not None:
+            uses = promo_usage.get(promo_code, 0)
+            if uses >= promo["max_uses"]:
+                error_text = "❌ This promo code has reached its usage limit" if lang == "en" else "❌ Этот промокод исчерпал лимит использований"
+                await message.answer(error_text)
+                await state.finish()
+                kb = await get_main_menu(user_id)
+                await message.answer("👌", reply_markup=kb)
+                return
+        
+        # Проверяем не использовал ли уже этот пользователь промокод
+        conn = await db_pool.acquire()
+        try:
+            cursor = await conn.execute(
+                "SELECT paid FROM users WHERE id=?",
+                (user_id,)
+            )
+            row = await cursor.fetchone()
+            if row and row[0] == 1:
+                already_text = "✅ You already have access!" if lang == "en" else "✅ У тебя уже есть доступ!"
+                await message.answer(already_text)
+                await state.finish()
+                kb = await get_main_menu(user_id)
+                await message.answer("👌", reply_markup=kb)
+                return
+        finally:
+            await db_pool.release(conn)
+        
+        # Выдаём доступ
+        from datetime import datetime, timedelta
+        from crypto_payment import grant_subscription_access
+        
+        await grant_subscription_access(user_id, "promo_" + promo_code)
+        
+        # Устанавливаем срок действия
+        expiry_date = datetime.now() + timedelta(days=promo["duration_days"])
+        conn = await db_pool.acquire()
+        try:
+            await conn.execute(
+                "UPDATE users SET subscription_expiry=?, subscription_plan=? WHERE id=?",
+                (int(expiry_date.timestamp()), f"promo_{promo_code}", user_id)
+            )
+            await conn.commit()
+        finally:
+            await db_pool.release(conn)
+        
+        # Увеличиваем счётчик использований
+        promo_usage[promo_code] = promo_usage.get(promo_code, 0) + 1
+        
+        # Уведомление
+        if lang == "en":
+            text = "🎉 <b>Promo Code Activated!</b>\n\n"
+            text += f"✅ Access granted\n"
+            text += f"📅 Valid until: {expiry_date.strftime('%d.%m.%Y')}\n\n"
+            text += f"Use /start to begin receiving signals!"
+        else:
+            text = "🎉 <b>Промокод активирован!</b>\n\n"
+            text += f"✅ Доступ выдан\n"
+            text += f"📅 Действует до: {expiry_date.strftime('%d.%m.%Y')}\n\n"
+            text += f"Используй /start чтобы начать получать сигналы!"
+        
+        await state.finish()
+        kb = await get_main_menu(user_id)
+        await message.answer(text, reply_markup=kb)
+        
+        logger.info(f"Promo code {promo_code} activated for user {user_id}")
+    else:
+        # Неверный промокод
+        error_text = "❌ Invalid promo code. Try again or click Cancel." if lang == "en" else "❌ Неверный промокод. Попробуй снова или нажми Отмена."
+        await message.answer(error_text)
+
 # ==================== СТАТИСТИКА ====================
 async def show_stats(message: types.Message):
     """Показать статистику пользователя"""
@@ -335,8 +569,21 @@ def setup_handlers(dp: Dispatcher):
     """Регистрация всех обработчиков"""
     
     # Команды
-    dp.register_message_handler(cmd_start, commands=["start"])
+    dp.register_message_handler(cmd_start, commands=["start"], state="*")
     dp.register_message_handler(show_admin_panel, commands=["admin"])
+    
+    # Кнопка промокода
+    dp.register_message_handler(
+        show_promo_input,
+        lambda m: m.text in ["🎁 Promo Code", "🎁 Промокод"],
+        state="*"
+    )
+    
+    # Обработка введённого промокода
+    dp.register_message_handler(
+        handle_promo_code,
+        state=PromoStates.waiting_for_promo
+    )
     
     # Текстовые кнопки
     dp.register_message_handler(
@@ -360,6 +607,12 @@ def setup_handlers(dp: Dispatcher):
     @dp.message_handler(lambda m: m.text in ["🔓 Get Access", "🔓 Открыть доступ"])
     async def open_access(message: types.Message):
         await show_payment_menu(message, is_callback=False)
+    
+    # Callback: выбор языка
+    dp.register_callback_query_handler(
+        handle_language_selection,
+        lambda c: c.data.startswith("lang_")
+    )
     
     # Callback кнопки
     dp.register_callback_query_handler(handle_callbacks, lambda c: True)
