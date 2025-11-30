@@ -356,3 +356,4 @@ async def get_paid_users_count() -> int:
         return row[0] if row else 0
     finally:
         await db_pool.release(conn)
+    
