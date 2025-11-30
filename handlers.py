@@ -3,6 +3,9 @@ handlers.py - Обработчики команд с интеграцией пл
 """
 from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from datetime import datetime, timedelta
 from database import (
     add_user, get_user_lang, set_user_lang, is_paid, get_user_pairs,
     add_user_pair, remove_user_pair, get_balance, grant_access, revoke_access,
@@ -396,31 +399,21 @@ async def handle_promo_code(message: types.Message, state: FSMContext):
                 return
         
         # Проверяем не использовал ли уже этот пользователь промокод
-        conn = await db_pool.acquire()
-        try:
-            cursor = await conn.execute(
-                "SELECT paid FROM users WHERE id=?",
-                (user_id,)
-            )
-            row = await cursor.fetchone()
-            if row and row[0] == 1:
-                already_text = "✅ You already have access!" if lang == "en" else "✅ У тебя уже есть доступ!"
-                await message.answer(already_text)
-                await state.finish()
-                kb = await get_main_menu(user_id)
-                await message.answer("👌", reply_markup=kb)
-                return
-        finally:
-            await db_pool.release(conn)
+        if await is_paid(user_id):
+            already_text = "✅ You already have access!" if lang == "en" else "✅ У тебя уже есть доступ!"
+            await message.answer(already_text)
+            await state.finish()
+            kb = await get_main_menu(user_id)
+            await message.answer("👌", reply_markup=kb)
+            return
         
         # Выдаём доступ
-        from datetime import datetime, timedelta
-        from crypto_payment import grant_subscription_access
-        
-        await grant_subscription_access(user_id, "promo_" + promo_code)
+        # Устанавливаем флаг оплаты
+        await grant_access(user_id)
         
         # Устанавливаем срок действия
         expiry_date = datetime.now() + timedelta(days=promo["duration_days"])
+        
         conn = await db_pool.acquire()
         try:
             await conn.execute(
@@ -428,6 +421,7 @@ async def handle_promo_code(message: types.Message, state: FSMContext):
                 (int(expiry_date.timestamp()), f"promo_{promo_code}", user_id)
             )
             await conn.commit()
+            logger.info(f"✅ Promo code {promo_code} activated for user {user_id} until {expiry_date}")
         finally:
             await db_pool.release(conn)
         
@@ -450,7 +444,6 @@ async def handle_promo_code(message: types.Message, state: FSMContext):
         kb = await get_main_menu(user_id)
         await message.answer(text, reply_markup=kb)
         
-        logger.info(f"Promo code {promo_code} activated for user {user_id}")
     else:
         # Неверный промокод
         error_text = "❌ Invalid promo code. Try again or click Cancel." if lang == "en" else "❌ Неверный промокод. Попробуй снова или нажми Отмена."
