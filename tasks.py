@@ -12,7 +12,7 @@ from aiogram.utils.exceptions import RetryAfter, TelegramAPIError
 from config import (
     CHECK_INTERVAL, DEFAULT_PAIRS, TIMEFRAME,
     MAX_SIGNALS_PER_DAY, BATCH_SEND_SIZE, BATCH_SEND_DELAY,
-    SIGNAL_COOLDOWN, MIN_CONFIDENCE_SCORE, MIN_VOLUME_MULTIPLIER, MIN_VOLATILITY
+    SIGNAL_COOLDOWN
 )
 from database import (
     get_all_tracked_pairs, get_pairs_with_users,
@@ -87,7 +87,7 @@ async def price_collector(bot: Bot):
 
 async def signal_analyzer(bot: Bot):
     """Анализ и отправка сигналов с CryptoMicky алгоритмом"""
-    logger.info("🎯 CryptoMicky Signal Analyzer started (60%+ Confidence)")
+    logger.info("🎯 CryptoMicky Signal Analyzer started")
     
     await asyncio.sleep(10)
     
