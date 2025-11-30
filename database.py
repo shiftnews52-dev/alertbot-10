@@ -1,246 +1,336 @@
 """
-database.py - Работа с базой данных
+database.py - База данных с поддержкой платных подписок
 """
-import time
-import asyncio
-import logging
-from typing import List
-from datetime import datetime
 import aiosqlite
-
-from config import DB_PATH
+import logging
+from datetime import datetime
+import os
 
 logger = logging.getLogger(__name__)
 
-# ==================== SQL SCHEMA ====================
-INIT_SQL = """
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-PRAGMA cache_size=10000;
-PRAGMA temp_store=MEMORY;
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db" if os.path.exists("/data") else "bot.db")
 
+# SQL схема
+INIT_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     invited_by INTEGER,
     balance REAL DEFAULT 0,
     paid INTEGER DEFAULT 0,
     language TEXT DEFAULT 'ru',
+    min_score INTEGER DEFAULT 70,
+    subscription_expiry INTEGER,
+    subscription_plan TEXT,
     created_ts INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_pairs (
-    user_id INTEGER NOT NULL,
-    pair TEXT NOT NULL,
+    user_id INTEGER,
+    pair TEXT,
+    enabled INTEGER DEFAULT 1,
     PRIMARY KEY (user_id, pair)
 );
 
-CREATE TABLE IF NOT EXISTS signals_sent (
+CREATE TABLE IF NOT EXISTS active_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     pair TEXT NOT NULL,
-    side TEXT NOT NULL,
-    price REAL NOT NULL,
+    direction TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    tp1_price REAL NOT NULL,
+    tp2_price REAL NOT NULL,
+    tp3_price REAL NOT NULL,
+    sl_price REAL NOT NULL,
     score INTEGER NOT NULL,
-    sent_ts INTEGER NOT NULL
+    reasons TEXT,
+    tp1_hit INTEGER DEFAULT 0,
+    tp2_hit INTEGER DEFAULT 0,
+    tp3_hit INTEGER DEFAULT 0,
+    sl_hit INTEGER DEFAULT 0,
+    created_ts INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_signals_pair_ts ON signals_sent(pair, sent_ts);
-CREATE INDEX IF NOT EXISTS idx_user_pairs_user ON user_pairs(user_id);
-CREATE INDEX IF NOT EXISTS idx_users_paid ON users(paid);
+CREATE TABLE IF NOT EXISTS closed_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    pair TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL NOT NULL,
+    pnl_percent REAL NOT NULL,
+    result TEXT NOT NULL,
+    created_ts INTEGER NOT NULL,
+    closed_ts INTEGER NOT NULL,
+    duration_hours REAL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
-# ==================== DATABASE POOL ====================
-class DBPool:
-    """Пул соединений к БД"""
-    def __init__(self, path: str, pool_size: int = 5):
-        self.path = path
+# Пул соединений
+db_pool = None
+
+class DatabasePool:
+    """Простой пул соединений для SQLite"""
+    def __init__(self, db_path, pool_size=5):
+        self.db_path = db_path
+        self.pool = []
         self.pool_size = pool_size
-        self._pool: List[aiosqlite.Connection] = []
-        self._available = asyncio.Queue()
-        self._initialized = False
     
     async def init(self):
-        if self._initialized:
-            return
-        
+        """Инициализация пула"""
         for _ in range(self.pool_size):
-            conn = await aiosqlite.connect(self.path)
+            conn = await aiosqlite.connect(self.db_path)
             conn.row_factory = aiosqlite.Row
-            self._pool.append(conn)
-            await self._available.put(conn)
-        
-        conn = await self.acquire()
-        try:
-            await conn.executescript(INIT_SQL)
-            await conn.commit()
-        finally:
-            await self.release(conn)
-        
-        self._initialized = True
+            self.pool.append(conn)
         logger.info(f"Database pool initialized with {self.pool_size} connections")
     
-    async def acquire(self) -> aiosqlite.Connection:
-        return await self._available.get()
+    async def acquire(self):
+        """Получить соединение из пула"""
+        if self.pool:
+            return self.pool.pop(0)
+        # Если пул пуст, создаём новое соединение
+        conn = await aiosqlite.connect(self.db_path)
+        conn.row_factory = aiosqlite.Row
+        return conn
     
-    async def release(self, conn: aiosqlite.Connection):
-        await self._available.put(conn)
-    
-    async def close(self):
-        for conn in self._pool:
+    async def release(self, conn):
+        """Вернуть соединение в пул"""
+        if len(self.pool) < self.pool_size:
+            self.pool.append(conn)
+        else:
             await conn.close()
+    
+    async def close_all(self):
+        """Закрыть все соединения"""
+        for conn in self.pool:
+            await conn.close()
+        self.pool.clear()
 
-# Глобальный пул
-db_pool = DBPool(DB_PATH, pool_size=5)
+async def init_db():
+    """Инициализация базы данных"""
+    global db_pool
+    
+    # Создаём пул
+    db_pool = DatabasePool(DB_PATH, pool_size=5)
+    await db_pool.init()
+    
+    # Создаём таблицы
+    conn = await db_pool.acquire()
+    try:
+        await conn.executescript(INIT_SQL)
+        await conn.commit()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        raise
+    finally:
+        await db_pool.release(conn)
 
-# ==================== USER FUNCTIONS ====================
-async def get_user_lang(uid: int) -> str:
+async def add_user(user_id: int, lang: str = "ru", invited_by: int = None):
+    """Добавить нового пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        created_ts = int(datetime.now().timestamp())
+        await conn.execute(
+            "INSERT OR IGNORE INTO users (id, language, invited_by, created_ts) VALUES (?, ?, ?, ?)",
+            (user_id, lang, invited_by, created_ts)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+async def get_user_lang(user_id: int) -> str:
     """Получить язык пользователя"""
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT language FROM users WHERE id=?", (uid,))
+        cursor = await conn.execute("SELECT language FROM users WHERE id=?", (user_id,))
         row = await cursor.fetchone()
-        return row["language"] if row and row["language"] else "ru"
+        return row[0] if row else "ru"
     finally:
         await db_pool.release(conn)
 
-async def set_user_lang(uid: int, lang: str):
+async def set_user_lang(user_id: int, lang: str):
     """Установить язык пользователя"""
     conn = await db_pool.acquire()
     try:
-        await conn.execute("UPDATE users SET language=? WHERE id=?", (lang, uid))
+        await conn.execute("UPDATE users SET language=? WHERE id=?", (lang, user_id))
         await conn.commit()
     finally:
         await db_pool.release(conn)
 
-async def is_paid(uid: int) -> bool:
+async def is_paid(user_id: int) -> bool:
     """Проверить оплачен ли доступ"""
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT paid FROM users WHERE id=?", (uid,))
+        cursor = await conn.execute(
+            "SELECT paid, subscription_expiry FROM users WHERE id=?", 
+            (user_id,)
+        )
         row = await cursor.fetchone()
-        return bool(row and row["paid"])
+        if not row:
+            return False
+        
+        # Проверяем флаг paid
+        if row[0] == 1:
+            # Если есть срок действия подписки
+            if row[1]:
+                # Проверяем не истёк ли срок
+                if row[1] > int(datetime.now().timestamp()):
+                    return True
+                else:
+                    # Срок истёк - снимаем флаг
+                    await conn.execute("UPDATE users SET paid=0 WHERE id=?", (user_id,))
+                    await conn.commit()
+                    return False
+            return True
+        return False
     finally:
         await db_pool.release(conn)
 
-async def get_user_balance(uid: int) -> float:
-    """Получить баланс пользователя"""
+async def grant_access(user_id: int):
+    """Выдать доступ пользователю"""
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT balance FROM users WHERE id=?", (uid,))
-        row = await cursor.fetchone()
-        return row["balance"] if row else 0.0
+        await conn.execute("UPDATE users SET paid=1 WHERE id=?", (user_id,))
+        await conn.commit()
+        logger.info(f"Access granted to user {user_id}")
     finally:
         await db_pool.release(conn)
 
-async def get_user_refs_count(uid: int) -> int:
-    """Получить количество рефералов"""
+async def revoke_access(user_id: int):
+    """Отозвать доступ"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute("UPDATE users SET paid=0 WHERE id=?", (user_id,))
+        await conn.commit()
+        logger.info(f"Access revoked from user {user_id}")
+    finally:
+        await db_pool.release(conn)
+
+async def get_subscription_info(user_id: int) -> dict:
+    """Получить информацию о подписке"""
     conn = await db_pool.acquire()
     try:
         cursor = await conn.execute(
-            "SELECT COUNT(*) as cnt FROM users WHERE invited_by=? AND paid=1",
-            (uid,)
+            "SELECT subscription_expiry, subscription_plan FROM users WHERE id=?",
+            (user_id,)
         )
         row = await cursor.fetchone()
-        return row["cnt"] if row else 0
+        if row and row[0]:
+            expiry_ts = row[0]
+            expiry_date = datetime.fromtimestamp(expiry_ts)
+            days_left = (expiry_date - datetime.now()).days
+            
+            return {
+                "expiry_date": expiry_date,
+                "expiry_ts": expiry_ts,
+                "plan": row[1],
+                "days_left": max(0, days_left),
+                "is_active": expiry_ts > int(datetime.now().timestamp())
+            }
+        return None
     finally:
         await db_pool.release(conn)
 
-# ==================== PAIRS FUNCTIONS ====================
-async def get_user_pairs(uid: int) -> List[str]:
-    """Получить пары пользователя"""
-    conn = await db_pool.acquire()
-    try:
-        cursor = await conn.execute("SELECT pair FROM user_pairs WHERE user_id=?", (uid,))
-        rows = await cursor.fetchall()
-        return [r["pair"] for r in rows]
-    finally:
-        await db_pool.release(conn)
-
-async def add_user_pair(uid: int, pair: str):
-    """Добавить пару пользователю"""
-    conn = await db_pool.acquire()
-    try:
-        await conn.execute("INSERT OR IGNORE INTO user_pairs(user_id, pair) VALUES(?,?)", (uid, pair.upper()))
-        await conn.commit()
-    finally:
-        await db_pool.release(conn)
-
-async def remove_user_pair(uid: int, pair: str):
-    """Удалить пару у пользователя"""
-    conn = await db_pool.acquire()
-    try:
-        await conn.execute("DELETE FROM user_pairs WHERE user_id=? AND pair=?", (uid, pair.upper()))
-        await conn.commit()
-    finally:
-        await db_pool.release(conn)
-
-async def clear_user_pairs(uid: int):
-    """Очистить все пары пользователя"""
-    conn = await db_pool.acquire()
-    try:
-        await conn.execute("DELETE FROM user_pairs WHERE user_id=?", (uid,))
-        await conn.commit()
-    finally:
-        await db_pool.release(conn)
-
-async def get_all_tracked_pairs() -> List[str]:
-    """Получить все отслеживаемые пары"""
-    conn = await db_pool.acquire()
-    try:
-        cursor = await conn.execute("SELECT DISTINCT pair FROM user_pairs")
-        rows = await cursor.fetchall()
-        return [r["pair"] for r in rows]
-    finally:
-        await db_pool.release(conn)
-
-async def get_pairs_with_users():
-    """Получить пары с пользователями (для рассылки сигналов)"""
-    conn = await db_pool.acquire()
-    try:
-        cursor = await conn.execute(
-            "SELECT up.user_id, up.pair FROM user_pairs up "
-            "JOIN users u ON up.user_id = u.id WHERE u.paid = 1"
-        )
-        rows = await cursor.fetchall()
-        return rows
-    finally:
-        await db_pool.release(conn)
-
-# ==================== SIGNALS FUNCTIONS ====================
-async def count_signals_today(pair: str) -> int:
-    """Подсчитать сигналы за сегодня"""
-    conn = await db_pool.acquire()
-    try:
-        today_start = int(datetime.now().replace(hour=0, minute=0, second=0).timestamp())
-        cursor = await conn.execute(
-            "SELECT COUNT(*) as cnt FROM signals_sent WHERE pair=? AND sent_ts >= ?",
-            (pair, today_start)
-        )
-        row = await cursor.fetchone()
-        return row["cnt"] if row else 0
-    finally:
-        await db_pool.release(conn)
-
-async def log_signal(uid: int, pair: str, side: str, price: float, score: int):
-    """Записать отправленный сигнал"""
+async def add_balance(user_id: int, amount: float):
+    """Добавить баланс"""
     conn = await db_pool.acquire()
     try:
         await conn.execute(
-            "INSERT INTO signals_sent(user_id, pair, side, price, score, sent_ts) VALUES(?,?,?,?,?,?)",
-            (uid, pair, side, price, score, int(time.time()))
+            "UPDATE users SET balance = balance + ? WHERE id=?",
+            (amount, user_id)
         )
         await conn.commit()
     finally:
         await db_pool.release(conn)
 
-# ==================== ADMIN FUNCTIONS ====================
-async def get_users_count() -> int:
+async def get_balance(user_id: int) -> float:
+    """Получить баланс"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT balance FROM users WHERE id=?", (user_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0.0
+    finally:
+        await db_pool.release(conn)
+
+async def get_user_pairs(user_id: int) -> list:
+    """Получить пары пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT pair FROM user_pairs WHERE user_id=? AND enabled=1",
+            (user_id,)
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+    finally:
+        await db_pool.release(conn)
+
+async def add_user_pair(user_id: int, pair: str):
+    """Добавить пару"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "INSERT OR REPLACE INTO user_pairs (user_id, pair, enabled) VALUES (?, ?, 1)",
+            (user_id, pair)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+async def remove_user_pair(user_id: int, pair: str):
+    """Удалить пару"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "DELETE FROM user_pairs WHERE user_id=? AND pair=?",
+            (user_id, pair)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+async def get_all_paid_users() -> list:
+    """Получить всех оплативших пользователей"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT id FROM users WHERE paid=1 AND (subscription_expiry IS NULL OR subscription_expiry > ?)",
+            (int(datetime.now().timestamp()),)
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+    finally:
+        await db_pool.release(conn)
+
+async def get_min_score(user_id: int) -> int:
+    """Получить минимальный score"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT min_score FROM users WHERE id=?", (user_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 70
+    finally:
+        await db_pool.release(conn)
+
+async def set_min_score(user_id: int, score: int):
+    """Установить минимальный score"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute("UPDATE users SET min_score=? WHERE id=?", (score, user_id))
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+async def get_total_users() -> int:
     """Получить общее количество пользователей"""
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT COUNT(*) as cnt FROM users")
+        cursor = await conn.execute("SELECT COUNT(*) FROM users")
         row = await cursor.fetchone()
-        return row["cnt"] if row else 0
+        return row[0] if row else 0
     finally:
         await db_pool.release(conn)
 
@@ -248,53 +338,11 @@ async def get_paid_users_count() -> int:
     """Получить количество оплативших"""
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT COUNT(*) as cnt FROM users WHERE paid=1")
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE paid=1 AND (subscription_expiry IS NULL OR subscription_expiry > ?)",
+            (int(datetime.now().timestamp()),)
+        )
         row = await cursor.fetchone()
-        return row["cnt"] if row else 0
+        return row[0] if row else 0
     finally:
         await db_pool.release(conn)
-
-async def get_active_users_count() -> int:
-    """Получить количество активных (с парами)"""
-    conn = await db_pool.acquire()
-    try:
-        cursor = await conn.execute("SELECT COUNT(DISTINCT user_id) as cnt FROM user_pairs")
-        row = await cursor.fetchone()
-        return row["cnt"] if row else 0
-    finally:
-        await db_pool.release(conn)
-
-async def get_all_user_ids() -> List[int]:
-    """Получить ID всех пользователей"""
-    conn = await db_pool.acquire()
-    try:
-        cursor = await conn.execute("SELECT id FROM users")
-        rows = await cursor.fetchall()
-        return [r["id"] for r in rows]
-    finally:
-        await db_pool.release(conn)
-
-async def grant_access(uid: int):
-    """Выдать доступ пользователю"""
-    conn = await db_pool.acquire()
-    try:
-        await conn.execute("INSERT OR IGNORE INTO users(id, created_ts) VALUES(?,?)", (uid, int(time.time())))
-        await conn.execute("UPDATE users SET paid=1 WHERE id=?", (uid,))
-        await conn.commit()
-    finally:
-        await db_pool.release(conn)
-
-async def add_balance(uid: int, amount: float):
-    """Добавить баланс пользователю"""
-    conn = await db_pool.acquire()
-    try:
-        await conn.execute("INSERT OR IGNORE INTO users(id, created_ts) VALUES(?,?)", (uid, int(time.time())))
-        await conn.execute("UPDATE users SET balance = COALESCE(balance, 0) + ? WHERE id=?", (amount, uid))
-        await conn.commit()
-    finally:
-        await db_pool.release(conn)
-
-# ==================== INIT ====================
-async def init_db():
-    """Инициализация базы данных"""
-    await db_pool.init()
