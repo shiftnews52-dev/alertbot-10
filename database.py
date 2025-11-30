@@ -140,6 +140,16 @@ async def add_user(user_id: int, lang: str = "ru", invited_by: int = None):
     finally:
         await db_pool.release(conn)
 
+async def user_exists(user_id: int) -> bool:
+    """Проверить существует ли пользователь"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT id FROM users WHERE id=?", (user_id,))
+        row = await cursor.fetchone()
+        return row is not None
+    finally:
+        await db_pool.release(conn)
+
 async def get_user_lang(user_id: int) -> str:
     """Получить язык пользователя"""
     conn = await db_pool.acquire()
