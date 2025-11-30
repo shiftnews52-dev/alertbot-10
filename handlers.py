@@ -1,745 +1,384 @@
 """
-handlers.py - Обработчики команд и кнопок (полная версия)
+handlers.py - Обработчики команд с интеграцией платежей
 """
-import time
-import asyncio
-from aiogram import types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from database import (
+    add_user, get_user_lang, set_user_lang, is_paid, get_user_pairs,
+    add_user_pair, remove_user_pair, get_balance, grant_access, revoke_access,
+    get_total_users, get_paid_users_count, get_all_paid_users, get_subscription_info
+)
+from config import ADMIN_IDS, SUPPORT_URL, DEFAULT_PAIRS
+from payment_handlers import show_payment_menu, handle_plan_selection, handle_payment_check
+import logging
 
-from config import ADMIN_IDS, SUPPORT_URL, t, BOT_NAME
-from config import IMG_START, IMG_ALERTS, IMG_GUIDE, IMG_PAYWALL, IMG_REF
-from database import *
-from indicators import fetch_price
-import httpx
+logger = logging.getLogger(__name__)
 
-# Состояния пользователей для диалогов
-USER_STATES = {}
-
-# ==================== HELPER FUNCTIONS ====================
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
-
-async def send_message_safe_local(bot, user_id: int, text: str, **kwargs):
-    """Локальная версия для handlers"""
-    from aiogram.utils.exceptions import RetryAfter, TelegramAPIError
-    try:
-        await bot.send_message(user_id, text, **kwargs)
-        return True
-    except RetryAfter as e:
-        await asyncio.sleep(e.timeout)
-        return await send_message_safe_local(bot, user_id, text, **kwargs)
-    except TelegramAPIError:
-        return False
-
-async def send_photo_or_text(message_or_call, photo_url: str, text: str, reply_markup=None, is_callback=False):
-    """Отправить фото если есть URL, иначе текст"""
-    try:
-        if photo_url:
-            if is_callback:
-                try:
-                    await message_or_call.message.delete()
-                except:
-                    pass
-                await message_or_call.message.answer_photo(
-                    photo=photo_url,
-                    caption=text,
-                    reply_markup=reply_markup
-                )
-            else:
-                await message_or_call.answer_photo(
-                    photo=photo_url,
-                    caption=text,
-                    reply_markup=reply_markup
-                )
+# ==================== ГЛАВНОЕ МЕНЮ ====================
+async def get_main_menu(user_id: int):
+    """Получить главное меню"""
+    lang = await get_user_lang(user_id)
+    paid = await is_paid(user_id)
+    
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    
+    if lang == "en":
+        if paid:
+            kb.add(
+                KeyboardButton("📈 Alerts"),
+                KeyboardButton("👥 Referrals")
+            )
+            kb.add(
+                KeyboardButton("📖 Guide"),
+                KeyboardButton("💬 Support")
+            )
+            kb.add(KeyboardButton("📊 Statistics"))
         else:
-            if is_callback:
-                await message_or_call.message.edit_text(text, reply_markup=reply_markup)
-            else:
-                await message_or_call.answer(text, reply_markup=reply_markup)
-    except Exception:
-        if is_callback:
-            try:
-                await message_or_call.message.edit_text(text, reply_markup=reply_markup)
-            except:
-                await message_or_call.message.answer(text, reply_markup=reply_markup)
+            kb.add(KeyboardButton("📖 Guide"))
+            kb.add(KeyboardButton("🔓 Get Access"))
+            kb.add(KeyboardButton("💬 Support"))
+    else:
+        if paid:
+            kb.add(
+                KeyboardButton("📈 Алерты"),
+                KeyboardButton("👥 Рефералка")
+            )
+            kb.add(
+                KeyboardButton("📖 Инструкция"),
+                KeyboardButton("💬 Поддержка")
+            )
+            kb.add(KeyboardButton("📊 Статистика"))
         else:
-            await message_or_call.answer(text, reply_markup=reply_markup)
-
-# ==================== KEYBOARDS ====================
-def main_menu_kb(is_admin_user: bool, is_paid_user: bool, lang: str = "ru"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    if is_paid_user:
-        kb.add(
-            InlineKeyboardButton(t(lang, "btn_alerts"), callback_data="menu_alerts"),
-            InlineKeyboardButton(t(lang, "btn_ref"), callback_data="menu_ref")
-        )
-    kb.add(
-        InlineKeyboardButton(t(lang, "btn_guide"), callback_data="menu_guide"),
-        InlineKeyboardButton(t(lang, "btn_support"), url=SUPPORT_URL)
-    )
-    if not is_paid_user:
-        kb.add(InlineKeyboardButton(t(lang, "btn_unlock"), callback_data="menu_pay"))
-    if is_admin_user:
-        kb.add(InlineKeyboardButton(t(lang, "btn_admin"), callback_data="menu_admin"))
-    kb.add(InlineKeyboardButton("🌐 Language", callback_data="change_lang"))
+            kb.add(KeyboardButton("📖 Инструкция"))
+            kb.add(KeyboardButton("🔓 Открыть доступ"))
+            kb.add(KeyboardButton("💬 Поддержка"))
+    
     return kb
 
-def alerts_kb(user_pairs: list, lang: str = "ru"):
-    from config import DEFAULT_PAIRS
+# ==================== КОМАНДА /START ====================
+async def cmd_start(message: types.Message):
+    """Команда /start"""
+    user_id = message.from_user.id
+    
+    # Проверяем реферальную ссылку
+    args = message.get_args()
+    invited_by = None
+    if args and args.isdigit():
+        invited_by = int(args)
+    
+    # Добавляем пользователя
+    await add_user(user_id, invited_by=invited_by)
+    
+    lang = await get_user_lang(user_id)
+    paid = await is_paid(user_id)
+    
+    # Приветствие
+    if lang == "en":
+        text = "🚀 <b>Alpha Entry Bot</b>\n\n"
+        text += "⏰ Hourly signals with automatic TP/SL\n\n"
+        text += "• 3-5 quality signals per day\n"
+        text += "• Multi-strategy (5+ indicators)\n"
+        text += "• Explanation for each entry\n"
+        text += "• Volume and volatility filtering\n\n"
+        
+        if paid:
+            # Показываем информацию о подписке
+            sub_info = await get_subscription_info(user_id)
+            if sub_info and sub_info["is_active"]:
+                text += f"✅ <b>Premium active until</b>\n"
+                text += f"   {sub_info['expiry_date'].strftime('%d.%m.%Y')}\n"
+                text += f"   Days left: {sub_info['days_left']}\n\n"
+        else:
+            text += "🔓 Click <b>Get Access</b> to start receiving signals\n\n"
+        
+        text += "📖 Click <b>Guide</b> for details"
+    else:
+        text = "🚀 <b>Alpha Entry Bot</b>\n\n"
+        text += "⏰ Часовые сигналы с автоматическим TP/SL\n\n"
+        text += "• 3-5 качественных сигналов в день\n"
+        text += "• Мультистратегия (5+ индикаторов)\n"
+        text += "• Объяснение каждого входа\n"
+        text += "• Фильтрация по объёму и волатильности\n\n"
+        
+        if paid:
+            # Показываем информацию о подписке
+            sub_info = await get_subscription_info(user_id)
+            if sub_info and sub_info["is_active"]:
+                text += f"✅ <b>Premium активна до</b>\n"
+                text += f"   {sub_info['expiry_date'].strftime('%d.%m.%Y')}\n"
+                text += f"   Осталось дней: {sub_info['days_left']}\n\n"
+        else:
+            text += "🔓 Жми <b>Открыть доступ</b> чтобы получать сигналы\n\n"
+        
+        text += "📖 Жми <b>Инструкция</b> для деталей"
+    
+    kb = await get_main_menu(user_id)
+    await message.answer(text, reply_markup=kb)
+
+# ==================== МЕНЮ АЛЕРТОВ ====================
+async def show_alerts_menu(message: types.Message):
+    """Показать меню управления алертами"""
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    paid = await is_paid(user_id)
+    
+    if not paid:
+        error_text = "❌ Access required. Click 🔓 Get Access" if lang == "en" else "❌ Нужен доступ. Нажми 🔓 Открыть доступ"
+        await message.answer(error_text)
+        return
+    
+    user_pairs = await get_user_pairs(user_id)
+    
+    if lang == "en":
+        text = "📈 <b>Alert Settings</b>\n\n"
+        text += f"Active pairs: {len(user_pairs)}/10\n\n"
+        if user_pairs:
+            text += "Your pairs:\n"
+            for pair in user_pairs:
+                text += f"• {pair}\n"
+        else:
+            text += "No active pairs yet.\nAdd pairs below."
+    else:
+        text = "📈 <b>Настройки алертов</b>\n\n"
+        text += f"Активных пар: {len(user_pairs)}/10\n\n"
+        if user_pairs:
+            text += "Твои пары:\n"
+            for pair in user_pairs:
+                text += f"• {pair}\n"
+        else:
+            text += "Нет активных пар.\nДобавь пары ниже."
+    
     kb = InlineKeyboardMarkup(row_width=2)
+    
+    # Кнопки добавления пар
     for pair in DEFAULT_PAIRS:
-        emoji = "✅" if pair in user_pairs else "➕"
-        kb.add(InlineKeyboardButton(f"{emoji} {pair}", callback_data=f"toggle_{pair}"))
+        is_active = pair in user_pairs
+        emoji = "✅" if is_active else "➕"
+        callback = f"remove_{pair}" if is_active else f"add_{pair}"
+        kb.insert(InlineKeyboardButton(f"{emoji} {pair}", callback_data=callback))
     
-    add_btn = t(lang, "add_custom_coin")
-    my_btn = t(lang, "my_coins")
-    info_btn = t(lang, "how_it_works")
+    # Кнопка назад
+    back_text = "⬅️ Back" if lang == "en" else "⬅️ Назад"
+    kb.add(InlineKeyboardButton(back_text, callback_data="back_main"))
     
-    kb.add(
-        InlineKeyboardButton(add_btn, callback_data="add_custom"),
-        InlineKeyboardButton(my_btn, callback_data="my_pairs")
-    )
-    kb.add(InlineKeyboardButton(info_btn, callback_data="alerts_info"))
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
-    return kb
+    await message.answer(text, reply_markup=kb)
 
-def ref_kb(lang: str = "ru"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🔗 " + ("Моя ссылка" if lang == "ru" else "My link"), callback_data="ref_link"),
-        InlineKeyboardButton("💰 " + ("Баланс" if lang == "ru" else "Balance"), callback_data="ref_balance")
-    )
-    kb.add(
-        InlineKeyboardButton("💎 " + ("Вывод (крипта)" if lang == "ru" else "Withdraw (crypto)"), callback_data="ref_withdraw_crypto"),
-        InlineKeyboardButton("⭐ " + ("Вывод (Stars)" if lang == "ru" else "Withdraw (Stars)"), callback_data="ref_withdraw_stars")
-    )
-    kb.add(InlineKeyboardButton("📖 " + ("Гайд" if lang == "ru" else "Guide"), callback_data="ref_guide"))
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
-    return kb
+# ==================== ИНСТРУКЦИЯ ====================
+async def show_guide(message: types.Message):
+    """Показать инструкцию"""
+    lang = await get_user_lang(message.from_user.id)
+    
+    if lang == "en":
+        text = "📖 <b>How to use the bot</b>\n\n"
+        text += "<b>1. Get Access</b>\n"
+        text += "Click 🔓 Get Access and choose a plan\n\n"
+        text += "<b>2. Add Pairs</b>\n"
+        text += "Go to 📈 Alerts and add up to 10 pairs\n\n"
+        text += "<b>3. Receive Signals</b>\n"
+        text += "Bot will send 3-5 signals per day\n"
+        text += "Each signal contains:\n"
+        text += "• Entry price\n"
+        text += "• 3 Take Profit levels\n"
+        text += "• Stop Loss\n"
+        text += "• Reasoning\n\n"
+        text += "<b>4. Risk Management</b>\n"
+        text += "• Never risk more than 2% per trade\n"
+        text += "• Always use Stop Loss\n"
+        text += "• Take partial profits at TP levels\n\n"
+        text += "<b>Timeframe:</b> 1 hour\n"
+        text += "<b>Max signals:</b> 3 per day per pair\n"
+        text += "<b>Min score:</b> 70/100\n\n"
+        text += "💬 Questions? Click Support"
+    else:
+        text = "📖 <b>Как пользоваться ботом</b>\n\n"
+        text += "<b>1. Открыть доступ</b>\n"
+        text += "Нажми 🔓 Открыть доступ и выбери тариф\n\n"
+        text += "<b>2. Добавить пары</b>\n"
+        text += "Зайди в 📈 Алерты и добавь до 10 пар\n\n"
+        text += "<b>3. Получать сигналы</b>\n"
+        text += "Бот будет присылать 3-5 сигналов в день\n"
+        text += "Каждый сигнал содержит:\n"
+        text += "• Цену входа\n"
+        text += "• 3 уровня Take Profit\n"
+        text += "• Stop Loss\n"
+        text += "• Обоснование\n\n"
+        text += "<b>4. Управление рисками</b>\n"
+        text += "• Никогда не рискуй > 2% на сделку\n"
+        text += "• Всегда используй Stop Loss\n"
+        text += "• Забирай частичную прибыль на TP\n\n"
+        text += "<b>Таймфрейм:</b> 1 час\n"
+        text += "<b>Макс. сигналов:</b> 3 в день на пару\n"
+        text += "<b>Мин. score:</b> 70/100\n\n"
+        text += "💬 Вопросы? Нажми Поддержка"
+    
+    await message.answer(text)
 
-def pay_kb(lang: str = "ru"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("⭐ " + t(lang, "pay_stars"), callback_data="pay_stars"),
-        InlineKeyboardButton("💎 " + t(lang, "pay_crypto"), callback_data="pay_crypto")
-    )
-    kb.add(InlineKeyboardButton("🎟 " + t(lang, "pay_code"), callback_data="pay_code"))
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
-    return kb
+# ==================== ПОДДЕРЖКА ====================
+async def show_support(message: types.Message):
+    """Показать контакты поддержки"""
+    lang = await get_user_lang(message.from_user.id)
+    
+    if lang == "en":
+        text = "💬 <b>Support</b>\n\n"
+        text += "Have questions or issues?\n"
+        text += "Contact us:"
+    else:
+        text = "💬 <b>Поддержка</b>\n\n"
+        text += "Есть вопросы или проблемы?\n"
+        text += "Свяжись с нами:"
+    
+    kb = InlineKeyboardMarkup()
+    support_text = "✉️ Contact Support" if lang == "en" else "✉️ Написать в поддержку"
+    kb.add(InlineKeyboardButton(support_text, url=SUPPORT_URL))
+    
+    await message.answer(text, reply_markup=kb)
 
-def admin_kb(lang: str = "ru"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("📊 " + ("Статистика" if lang == "ru" else "Statistics"), callback_data="adm_stats"),
-        InlineKeyboardButton("📢 " + ("Рассылка" if lang == "ru" else "Broadcast"), callback_data="adm_broadcast")
-    )
-    kb.add(
-        InlineKeyboardButton("✅ " + ("Выдать доступ" if lang == "ru" else "Grant access"), callback_data="adm_grant"),
-        InlineKeyboardButton("💰 " + ("Начислить" if lang == "ru" else "Add balance"), callback_data="adm_give")
-    )
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
-    return kb
+# ==================== СТАТИСТИКА ====================
+async def show_stats(message: types.Message):
+    """Показать статистику пользователя"""
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    paid = await is_paid(user_id)
+    
+    if not paid:
+        error_text = "❌ Access required" if lang == "en" else "❌ Нужен доступ"
+        await message.answer(error_text)
+        return
+    
+    # TODO: Реализовать получение статистики из PnL системы
+    if lang == "en":
+        text = "📊 <b>Your Statistics</b>\n\n"
+        text += "Coming soon...\n"
+        text += "Statistics will include:\n"
+        text += "• Win rate\n"
+        text += "• Average profit/loss\n"
+        text += "• Best/worst trades\n"
+        text += "• TP/SL distribution"
+    else:
+        text = "📊 <b>Твоя статистика</b>\n\n"
+        text += "Скоро...\n"
+        text += "Статистика будет включать:\n"
+        text += "• Винрейт\n"
+        text += "• Средняя прибыль/убыток\n"
+        text += "• Лучшие/худшие сделки\n"
+        text += "• Распределение по TP/SL"
+    
+    await message.answer(text)
 
-# ==================== SETUP HANDLERS ====================
-def setup_handlers(dp):
-    """Регистрация всех хендлеров"""
+# ==================== АДМИН ПАНЕЛЬ ====================
+async def show_admin_panel(message: types.Message):
+    """Админ панель"""
+    user_id = message.from_user.id
     
-    # ==================== MAIN COMMANDS ====================
-    async def show_language_selection(message: types.Message):
-        """Показать выбор языка для новых пользователей"""
-        text = "👋 <b>Welcome! / Привет!</b>\n\n"
-        text += "🌐 Please select your language\n"
-        text += "🌐 Пожалуйста, выбери свой язык"
-        
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            InlineKeyboardButton("🇷🇺 Русский", callback_data="first_lang_ru"),
-            InlineKeyboardButton("🇬🇧 English", callback_data="first_lang_en")
-        )
-        
-        if IMG_START:
-            await message.answer_photo(photo=IMG_START, caption=text, reply_markup=kb)
-        else:
-            await message.answer(text, reply_markup=kb)
+    if user_id not in ADMIN_IDS:
+        return
     
-    @dp.message_handler(commands=["start"])
-    async def cmd_start(message: types.Message):
-        uid = message.from_user.id
-        args = message.get_args()
-        invited_by = int(args) if args and args.isdigit() and int(args) != uid else None
-        
-        # Проверяем, новый ли пользователь
-        conn = await db_pool.acquire()
-        try:
-            cursor = await conn.execute("SELECT id FROM users WHERE id=?", (uid,))
-            existing_user = await cursor.fetchone()
-            
-            if not existing_user:
-                # Новый пользователь - создаём запись
-                await conn.execute(
-                    "INSERT INTO users(id, invited_by, created_ts) VALUES(?,?,?)",
-                    (uid, invited_by, int(time.time()))
-                )
-                await conn.commit()
-                
-                # Показываем выбор языка для новых пользователей
-                await show_language_selection(message)
-                return
-        finally:
-            await db_pool.release(conn)
-        
-        # Существующий пользователь - показываем главное меню
-        lang = await get_user_lang(uid)
-        text = t(lang, "start_text")
-        
-        paid = await is_paid(uid)
-        await send_photo_or_text(message, IMG_START, text, main_menu_kb(is_admin(uid), paid, lang))
+    total_users = await get_total_users()
+    paid_users = await get_paid_users_count()
     
-    @dp.callback_query_handler(lambda c: c.data.startswith("first_lang_"))
-    async def set_first_language(call: types.CallbackQuery):
-        """Установить язык при первом запуске"""
-        uid = call.from_user.id
-        lang = call.data.split("_")[2]  # ru или en
-        
-        # Сохраняем язык
-        await set_user_lang(uid, lang)
-        
-        # Показываем главное меню с выбранным языком
-        text = t(lang, "start_text")
-        paid = await is_paid(uid)
-        
-        try:
-            await call.message.delete()
-        except:
-            pass
-        
-        await send_photo_or_text(call, IMG_START, text, main_menu_kb(is_admin(uid), paid, lang))
-        await call.answer()
+    text = "👑 <b>Admin Panel</b>\n\n"
+    text += f"📊 Total users: {total_users}\n"
+    text += f"💎 Paid users: {paid_users}\n"
+    text += f"📈 Conversion: {(paid_users/total_users*100) if total_users > 0 else 0:.1f}%\n"
     
-    # ==================== LANGUAGE ====================
-    @dp.callback_query_handler(lambda c: c.data == "change_lang")
-    async def change_lang_menu(call: types.CallbackQuery):
-        """Меню выбора языка"""
-        text = "🌐 <b>Choose Language / Выбери язык</b>"
-        
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(
-            InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-            InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
-        )
-        kb.add(InlineKeyboardButton("⬅️ Назад / Back", callback_data="back_main"))
-        
-        try:
-            await call.message.edit_text(text, reply_markup=kb)
-        except:
-            await call.message.answer(text, reply_markup=kb)
-        await call.answer()
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"))
+    kb.add(InlineKeyboardButton("✅ Grant Access", callback_data="admin_grant"))
+    kb.add(InlineKeyboardButton("❌ Revoke Access", callback_data="admin_revoke"))
     
-    @dp.callback_query_handler(lambda c: c.data.startswith("lang_"))
-    async def set_language(call: types.CallbackQuery):
-        """Установить язык"""
-        lang = call.data.split("_")[1]
-        await set_user_lang(call.from_user.id, lang)
-        
-        await call.answer(t(lang, "language_changed"), show_alert=True)
-        await back_main(call)
+    await message.answer(text, reply_markup=kb)
+
+# ==================== CALLBACK ОБРАБОТЧИКИ ====================
+async def handle_callbacks(call: types.CallbackQuery):
+    """Обработка callback кнопок"""
+    user_id = call.from_user.id
+    data = call.data
     
-    # ==================== NAVIGATION ====================
-    @dp.callback_query_handler(lambda c: c.data == "back_main")
-    async def back_main(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        paid = await is_paid(call.from_user.id)
-        
-        text = t(lang, "main_menu")
-        await send_photo_or_text(call, IMG_START, text, main_menu_kb(is_admin(call.from_user.id), paid, lang), is_callback=True)
-        await call.answer()
+    # Добавление/удаление пар
+    if data.startswith("add_"):
+        pair = data.split("_")[1]
+        await add_user_pair(user_id, pair)
+        await show_alerts_menu(call.message)
+        await call.answer("✅")
     
-    # ==================== ALERTS ====================
-    @dp.callback_query_handler(lambda c: c.data == "menu_alerts")
-    async def menu_alerts(call: types.CallbackQuery):
-        uid = call.from_user.id
-        lang = await get_user_lang(uid)
-        
-        if not await is_paid(uid):
-            await call.answer(t(lang, "access_required"), show_alert=True)
+    elif data.startswith("remove_"):
+        pair = data.split("_")[1]
+        await remove_user_pair(user_id, pair)
+        await show_alerts_menu(call.message)
+        await call.answer("❌")
+    
+    # Возврат в главное меню
+    elif data == "back_main":
+        lang = await get_user_lang(user_id)
+        text = "👌 OK" if lang == "en" else "👌 Хорошо"
+        await call.message.delete()
+        await call.answer(text)
+    
+    # Админ: выдать доступ
+    elif data == "admin_grant":
+        if user_id not in ADMIN_IDS:
+            await call.answer("❌ Access denied")
             return
-        
-        pairs = await get_user_pairs(uid)
-        text = t(lang, "alerts_title", count=len(pairs))
-        
-        await send_photo_or_text(call, IMG_ALERTS, text, alerts_kb(pairs, lang), is_callback=True)
-        await call.answer()
+        await call.message.answer("Send user ID to grant access:")
+        # TODO: Реализовать FSM для получения ID
     
-    @dp.callback_query_handler(lambda c: c.data.startswith("toggle_"))
-    async def toggle_pair(call: types.CallbackQuery):
-        uid = call.from_user.id
-        lang = await get_user_lang(uid)
-        
-        if not await is_paid(uid):
-            await call.answer(t(lang, "access_required"), show_alert=True)
+    # Админ: отозвать доступ
+    elif data == "admin_revoke":
+        if user_id not in ADMIN_IDS:
+            await call.answer("❌ Access denied")
             return
-        
-        pair = call.data.split("_", 1)[1]
-        pairs = await get_user_pairs(uid)
-        
-        if pair in pairs:
-            await remove_user_pair(uid, pair)
-            await call.answer(t(lang, "coin_removed", pair=pair))
-        else:
-            if len(pairs) >= 10:
-                await call.answer(t(lang, "max_coins"), show_alert=True)
-                return
-            await add_user_pair(uid, pair)
-            await call.answer(t(lang, "coin_added", pair=pair))
-        
-        await menu_alerts(call)
+        await call.message.answer("Send user ID to revoke access:")
+        # TODO: Реализовать FSM для получения ID
+
+# ==================== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ====================
+def setup_handlers(dp: Dispatcher):
+    """Регистрация всех обработчиков"""
     
-    @dp.callback_query_handler(lambda c: c.data == "add_custom")
-    async def add_custom(call: types.CallbackQuery):
-        uid = call.from_user.id
-        lang = await get_user_lang(uid)
-        pairs = await get_user_pairs(uid)
-        
-        if len(pairs) >= 10:
-            await call.answer(t(lang, "max_coins"), show_alert=True)
-            return
-        
-        USER_STATES[uid] = {"mode": "waiting_custom_pair"}
-        text = t(lang, "send_coin_symbol")
-        
-        try:
-            await call.message.edit_text(text, reply_markup=alerts_kb(pairs, lang))
-        except:
-            await call.message.answer(text, reply_markup=alerts_kb(pairs, lang))
-        await call.answer()
+    # Команды
+    dp.register_message_handler(cmd_start, commands=["start"])
+    dp.register_message_handler(show_admin_panel, commands=["admin"])
     
-    @dp.message_handler(lambda m: USER_STATES.get(m.from_user.id, {}).get("mode") == "waiting_custom_pair")
-    async def handle_custom_pair(message: types.Message):
-        uid = message.from_user.id
-        lang = await get_user_lang(uid)
-        pair = message.text.strip().upper()
-        
-        if not pair.endswith("USDT") or len(pair) < 6:
-            await message.answer(t(lang, "invalid_format"))
-            return
-        
-        async with httpx.AsyncClient() as client:
-            price_data = await fetch_price(client, pair)
-            if not price_data:
-                await message.answer(t(lang, "pair_not_found", pair=pair))
-                return
-        
-        await add_user_pair(uid, pair)
-        USER_STATES.pop(uid, None)
-        await message.answer(t(lang, "coin_added", pair=pair))
+    # Текстовые кнопки
+    dp.register_message_handler(
+        show_alerts_menu,
+        lambda m: m.text in ["📈 Alerts", "📈 Алерты"]
+    )
+    dp.register_message_handler(
+        show_guide,
+        lambda m: m.text in ["📖 Guide", "📖 Инструкция"]
+    )
+    dp.register_message_handler(
+        show_support,
+        lambda m: m.text in ["💬 Support", "💬 Поддержка"]
+    )
+    dp.register_message_handler(
+        show_stats,
+        lambda m: m.text in ["📊 Statistics", "📊 Статистика"]
+    )
     
-    @dp.callback_query_handler(lambda c: c.data == "my_pairs")
-    async def my_pairs(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        pairs = await get_user_pairs(call.from_user.id)
-        
-        if not pairs:
-            await call.answer(t(lang, "no_active_coins"), show_alert=True)
-            return
-        
-        title = "📋 <b>" + t(lang, "my_coins") + "</b>\n\n"
-        text = title + "\n".join(f"• {p}" for p in pairs)
-        
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🗑 " + t(lang, "all_removed"), callback_data="clear_all"))
-        kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="menu_alerts"))
-        
-        try:
-            await call.message.edit_text(text, reply_markup=kb)
-        except:
-            await call.message.answer(text, reply_markup=kb)
-        await call.answer()
+    # Кнопка "Открыть доступ" - показываем меню оплаты
+    @dp.message_handler(lambda m: m.text in ["🔓 Get Access", "🔓 Открыть доступ"])
+    async def open_access(message: types.Message):
+        await show_payment_menu(message, is_callback=False)
     
-    @dp.callback_query_handler(lambda c: c.data == "clear_all")
-    async def clear_all(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        await clear_user_pairs(call.from_user.id)
-        await call.answer(t(lang, "all_removed"))
-        await menu_alerts(call)
+    # Callback кнопки
+    dp.register_callback_query_handler(handle_callbacks, lambda c: True)
     
-    @dp.callback_query_handler(lambda c: c.data == "alerts_info")
-    async def alerts_info(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        
-        text = t(lang, "guide_title") + "\n\n"
-        text += t(lang, "guide_step1") + "\n"
-        text += t(lang, "guide_step2") + "\n"
-        text += t(lang, "guide_step3") + "\n\n"
-        text += t(lang, "guide_signal_info")
-        
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="menu_alerts"))
-        
-        try:
-            await call.message.edit_text(text, reply_markup=kb)
-        except:
-            await call.message.answer(text, reply_markup=kb)
-        await call.answer()
+    # ==================== ПЛАТЁЖНЫЕ ОБРАБОТЧИКИ ====================
     
-    # ==================== PAYMENT ====================
+    # Меню оплаты
     @dp.callback_query_handler(lambda c: c.data == "menu_pay")
     async def menu_pay(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        text = t(lang, "payment_title") + "\n\n" + t(lang, "payment_features")
-        
-        await send_photo_or_text(call, IMG_PAYWALL, text, pay_kb(lang), is_callback=True)
-        await call.answer()
+        await show_payment_menu(call, is_callback=True)
     
-    @dp.callback_query_handler(lambda c: c.data == "pay_stars")
-    async def pay_stars(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        await call.answer(t(lang, "in_development"), show_alert=True)
+    # Выбор тарифного плана
+    @dp.callback_query_handler(lambda c: c.data.startswith("pay_") and len(c.data.split("_")) == 2)
+    async def select_plan(call: types.CallbackQuery):
+        await handle_plan_selection(call)
     
-    @dp.callback_query_handler(lambda c: c.data == "pay_crypto")
-    async def pay_crypto(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        text = t(lang, "crypto_payment_info", support_url=SUPPORT_URL)
-        
-        try:
-            await call.message.edit_text(text, reply_markup=pay_kb(lang))
-        except:
-            await call.message.answer(text, reply_markup=pay_kb(lang))
-        await call.answer()
+    # Проверка оплаты
+    @dp.callback_query_handler(lambda c: c.data.startswith("check_"))
+    async def check_payment(call: types.CallbackQuery):
+        await handle_payment_check(call)
     
-    @dp.callback_query_handler(lambda c: c.data == "pay_code")
-    async def pay_code(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        USER_STATES[call.from_user.id] = {"mode": "waiting_promo"}
-        text = t(lang, "send_promo")
-        
-        try:
-            await call.message.edit_text(text, reply_markup=pay_kb(lang))
-        except:
-            await call.message.answer(text, reply_markup=pay_kb(lang))
-        await call.answer()
-    
-    @dp.message_handler(lambda m: USER_STATES.get(m.from_user.id, {}).get("mode") == "waiting_promo")
-    async def handle_promo(message: types.Message):
-        lang = await get_user_lang(message.from_user.id)
-        await grant_access(message.from_user.id)
-        USER_STATES.pop(message.from_user.id, None)
-        await message.answer(t(lang, "access_granted"))
-    
-    # ==================== REFERRAL ====================
-    @dp.callback_query_handler(lambda c: c.data == "menu_ref")
-    async def menu_ref(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        text = t(lang, "ref_title")
-        await send_photo_or_text(call, IMG_REF, text, ref_kb(lang), is_callback=True)
-        await call.answer()
-    
-    @dp.callback_query_handler(lambda c: c.data == "ref_link")
-    async def ref_link(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        from aiogram import Bot
-        bot = Bot.get_current()
-        me = await bot.get_me()
-        link = f"https://t.me/{me.username}?start={call.from_user.id}"
-        text = t(lang, "ref_link", link=link)
-        
-        try:
-            await call.message.edit_text(text, reply_markup=ref_kb(lang), disable_web_page_preview=True)
-        except:
-            await call.message.answer(text, reply_markup=ref_kb(lang), disable_web_page_preview=True)
-        await call.answer()
-    
-    @dp.callback_query_handler(lambda c: c.data == "ref_balance")
-    async def ref_balance_handler(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        balance = await get_user_balance(call.from_user.id)
-        refs = await get_user_refs_count(call.from_user.id)
-        
-        text = t(lang, "ref_balance", balance=balance, refs=refs)
-        try:
-            await call.message.edit_text(text, reply_markup=ref_kb(lang))
-        except:
-            await call.message.answer(text, reply_markup=ref_kb(lang))
-        await call.answer()
-    
-    @dp.callback_query_handler(lambda c: c.data in ["ref_withdraw_crypto", "ref_withdraw_stars"])
-    async def ref_withdraw(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        
-        if call.data == "ref_withdraw_crypto":
-            text = t(lang, "withdraw_crypto_format")
-        else:
-            text = t(lang, "withdraw_stars_format")
-        
-        try:
-            await call.message.edit_text(text, reply_markup=ref_kb(lang))
-        except:
-            await call.message.answer(text, reply_markup=ref_kb(lang))
-        await call.answer()
-    
-    @dp.callback_query_handler(lambda c: c.data == "ref_guide")
-    async def ref_guide(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        text = t(lang, "ref_guide_text")
-        
-        try:
-            await call.message.edit_text(text, reply_markup=ref_kb(lang))
-        except:
-            await call.message.answer(text, reply_markup=ref_kb(lang))
-        await call.answer()
-    
-    @dp.message_handler(commands=["withdraw"])
-    async def cmd_withdraw(message: types.Message):
-        lang = await get_user_lang(message.from_user.id)
-        parts = message.text.split()
-        
-        if len(parts) != 5:
-            await message.reply(t(lang, "withdraw_invalid_format"))
-            return
-        
-        try:
-            amount = float(parts[4])
-        except:
-            await message.reply(t(lang, "withdraw_invalid_amount"))
-            return
-        
-        if amount < 20:
-            await message.reply(t(lang, "withdraw_min_amount"))
-            return
-        
-        await message.reply(t(lang, "withdraw_accepted", amount=amount, currency=parts[1]))
-        
-        from aiogram import Bot
-        bot = Bot.get_current()
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    admin_id,
-                    f"💸 Вывод\nUser: {message.from_user.id}\n{parts[1]} {parts[2]}\nАдрес: {parts[3]}\nСумма: {amount}"
-                )
-            except:
-                pass
-    
-    @dp.message_handler(commands=["withdraw_stars"])
-    async def cmd_withdraw_stars(message: types.Message):
-        lang = await get_user_lang(message.from_user.id)
-        parts = message.text.split()
-        
-        if len(parts) != 2:
-            await message.reply(t(lang, "withdraw_stars_format"))
-            return
-        
-        try:
-            amount = int(parts[1])
-        except:
-            await message.reply(t(lang, "withdraw_invalid_amount"))
-            return
-        
-        if amount < 20:
-            await message.reply(t(lang, "withdraw_min_amount"))
-            return
-        
-        await message.reply(t(lang, "withdraw_accepted", amount=amount, currency="Stars"))
-    
-    # ==================== GUIDE ====================
-    @dp.callback_query_handler(lambda c: c.data == "menu_guide")
-    async def menu_guide(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        
-        text = t(lang, "guide_title") + "\n\n"
-        text += t(lang, "guide_step1") + "\n"
-        text += t(lang, "guide_step2") + "\n"
-        text += t(lang, "guide_step3") + "\n\n"
-        text += t(lang, "guide_signal_info") + "\n\n"
-        text += t(lang, "guide_disclaimer")
-        
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
-        
-        await send_photo_or_text(call, IMG_GUIDE, text, kb, is_callback=True)
-        await call.answer()
-    
-    # ==================== ADMIN ====================
-    @dp.callback_query_handler(lambda c: c.data == "menu_admin")
-    async def menu_admin(call: types.CallbackQuery):
-        lang = await get_user_lang(call.from_user.id)
-        
-        if not is_admin(call.from_user.id):
-            await call.answer(t(lang, "admin_no_access"), show_alert=True)
-            return
-        
-        try:
-            await call.message.edit_text(t(lang, "admin_title"), reply_markup=admin_kb(lang))
-        except:
-            await call.message.answer(t(lang, "admin_title"), reply_markup=admin_kb(lang))
-        await call.answer()
-    
-    @dp.callback_query_handler(lambda c: c.data == "adm_stats")
-    async def adm_stats(call: types.CallbackQuery):
-        if not is_admin(call.from_user.id):
-            return
-        
-        lang = await get_user_lang(call.from_user.id)
-        total = await get_users_count()
-        paid = await get_paid_users_count()
-        active = await get_active_users_count()
-        
-        text = t(lang, "admin_stats", total=total, paid=paid, active=active)
-        try:
-            await call.message.edit_text(text, reply_markup=admin_kb(lang))
-        except:
-            await call.message.answer(text, reply_markup=admin_kb(lang))
-        await call.answer()
-    
-    @dp.callback_query_handler(lambda c: c.data == "adm_broadcast")
-    async def adm_broadcast(call: types.CallbackQuery):
-        if not is_admin(call.from_user.id):
-            return
-        
-        lang = await get_user_lang(call.from_user.id)
-        USER_STATES[call.from_user.id] = {"mode": "admin_broadcast"}
-        
-        try:
-            await call.message.edit_text(t(lang, "admin_send_broadcast"), reply_markup=admin_kb(lang))
-        except:
-            await call.message.answer(t(lang, "admin_send_broadcast"), reply_markup=admin_kb(lang))
-        await call.answer()
-    
-    @dp.message_handler(lambda m: USER_STATES.get(m.from_user.id, {}).get("mode") == "admin_broadcast")
-    async def handle_broadcast(message: types.Message):
-        if not is_admin(message.from_user.id):
-            return
-        
-        lang = await get_user_lang(message.from_user.id)
-        text = message.html_text
-        users = await get_all_user_ids()
-        
-        from aiogram import Bot
-        from config import BATCH_SEND_DELAY
-        bot = Bot.get_current()
-        
-        sent = 0
-        for user_id in users:
-            if await send_message_safe_local(bot, user_id, text, disable_web_page_preview=True):
-                sent += 1
-            await asyncio.sleep(BATCH_SEND_DELAY)
-        
-        USER_STATES.pop(message.from_user.id, None)
-        await message.reply(t(lang, "admin_broadcast_done", sent=sent, total=len(users)))
-    
-    @dp.callback_query_handler(lambda c: c.data == "adm_grant")
-    async def adm_grant(call: types.CallbackQuery):
-        if not is_admin(call.from_user.id):
-            return
-        
-        lang = await get_user_lang(call.from_user.id)
-        USER_STATES[call.from_user.id] = {"mode": "admin_grant"}
-        
-        try:
-            await call.message.edit_text(t(lang, "admin_send_user_id"), reply_markup=admin_kb(lang))
-        except:
-            await call.message.answer(t(lang, "admin_send_user_id"), reply_markup=admin_kb(lang))
-        await call.answer()
-    
-    @dp.message_handler(lambda m: USER_STATES.get(m.from_user.id, {}).get("mode") == "admin_grant")
-    async def handle_grant(message: types.Message):
-        if not is_admin(message.from_user.id):
-            return
-        
-        lang = await get_user_lang(message.from_user.id)
-        
-        try:
-            uid = int(message.text.strip())
-        except:
-            await message.reply(t(lang, "admin_invalid_id"))
-            return
-        
-        await grant_access(uid)
-        USER_STATES.pop(message.from_user.id, None)
-        await message.reply(t(lang, "admin_access_granted", uid=uid))
-        
-        from aiogram import Bot
-        bot = Bot.get_current()
-        try:
-            await bot.send_message(uid, t(lang, "access_granted"))
-        except:
-            pass
-    
-    @dp.callback_query_handler(lambda c: c.data == "adm_give")
-    async def adm_give(call: types.CallbackQuery):
-        if not is_admin(call.from_user.id):
-            return
-        
-        lang = await get_user_lang(call.from_user.id)
-        USER_STATES[call.from_user.id] = {"mode": "admin_give_uid"}
-        
-        try:
-            await call.message.edit_text(t(lang, "admin_send_user_id"), reply_markup=admin_kb(lang))
-        except:
-            await call.message.answer(t(lang, "admin_send_user_id"), reply_markup=admin_kb(lang))
-        await call.answer()
-    
-    @dp.message_handler(lambda m: USER_STATES.get(m.from_user.id, {}).get("mode") == "admin_give_uid")
-    async def handle_give_uid(message: types.Message):
-        if not is_admin(message.from_user.id):
-            return
-        
-        lang = await get_user_lang(message.from_user.id)
-        
-        try:
-            uid = int(message.text.strip())
-        except:
-            await message.reply(t(lang, "admin_invalid_id"))
-            return
-        
-        USER_STATES[message.from_user.id] = {"mode": "admin_give_amount", "target_id": uid}
-        await message.reply(t(lang, "admin_send_amount"))
-    
-    @dp.message_handler(lambda m: USER_STATES.get(m.from_user.id, {}).get("mode") == "admin_give_amount")
-    async def handle_give_amount(message: types.Message):
-        if not is_admin(message.from_user.id):
-            return
-        
-        lang = await get_user_lang(message.from_user.id)
-        
-        try:
-            amount = float(message.text.strip())
-        except:
-            await message.reply(t(lang, "withdraw_invalid_amount"))
-            return
-        
-        uid = USER_STATES[message.from_user.id]["target_id"]
-        await add_balance(uid, amount)
-        
-        USER_STATES.pop(message.from_user.id, None)
-        await message.reply(t(lang, "admin_balance_added", amount=amount, uid=uid))
-    
-    # ==================== PnL КОМАНДЫ ====================
-    from pnl_handlers import cmd_stats, cmd_active, stats_period_callback, stats_pairs_callback
-    
-    @dp.message_handler(commands=["stats"])
-    async def handle_stats(message: types.Message):
-        """Команда /stats - статистика PnL"""
-        await cmd_stats(message)
-    
-    @dp.message_handler(commands=["active"])
-    async def handle_active(message: types.Message):
-        """Команда /active - активные сигналы"""
-        await cmd_active(message)
-    
-    @dp.callback_query_handler(lambda c: c.data.startswith("stats_") and c.data.split("_")[1].isdigit())
-    async def handle_stats_period(call: types.CallbackQuery):
-        """Выбор периода статистики"""
-        await stats_period_callback(call)
-    
-    @dp.callback_query_handler(lambda c: c.data == "stats_pairs")
-    async def handle_stats_pairs(call: types.CallbackQuery):
-        """Статистика по парам"""
-        await stats_pairs_callback(call)
-    
-    @dp.callback_query_handler(lambda c: c.data == "show_stats")
-    async def menu_show_stats(call: types.CallbackQuery):
-        """Показать статистику из главного меню"""
-        message = call.message
-        message.from_user = call.from_user
-        await cmd_stats(message)
-        await call.answer()
+    logger.info("All handlers registered successfully")
