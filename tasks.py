@@ -193,7 +193,7 @@ async def signal_analyzer(bot: Bot):
                     text += f"   TP3: {signal['take_profit_3']:.2f}\n"
                     text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.2f}\n\n"
                     text += f"💰 <b>Объём позиции:</b> {signal['position_size']}\n"
-                    text += f"📊 <b>Confidence:</b> {confidence_level} ({confidence_pct}%)\n\n"
+                    text += f"📊 <b>Confidence:</b> {confidence_level}\n\n"
                     text += "⚠️ <i>Не финансовый совет</i>"
                     
                     # Отправка
