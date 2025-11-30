@@ -19,12 +19,12 @@ from database import (
     count_signals_today, log_signal, get_all_user_ids
 )
 from indicators import CANDLES, fetch_price, fetch_candles_binance
-from professional_analyzer import ProfessionalAnalyzer
+from professional_analyzer import CryptoMickyAnalyzer
 
 logger = logging.getLogger(__name__)
 
 # Создаём экземпляр анализатора
-crypto_micky_analyzer = ProfessionalAnalyzer()
+crypto_micky_analyzer = CryptoMickyAnalyzer()
 
 LAST_SIGNALS = {}
 
