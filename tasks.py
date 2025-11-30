@@ -1,5 +1,5 @@
 """
-tasks.py - Фоновые задачи с антиспамом и упрощённым форматом
+tasks_FIXED.py - Исправленная версия с увеличенной загрузкой данных
 """
 import time
 import asyncio
@@ -23,7 +23,6 @@ from professional_analyzer import CryptoMickyAnalyzer
 
 logger = logging.getLogger(__name__)
 
-# Создаём экземпляр анализатора
 crypto_micky_analyzer = CryptoMickyAnalyzer()
 
 LAST_SIGNALS = {}
@@ -40,26 +39,51 @@ async def send_message_safe(bot: Bot, user_id: int, text: str, **kwargs):
         return False
 
 async def price_collector(bot: Bot):
-    """Сбор рыночных данных для 1h, 4h, 1d таймфреймов"""
+    """
+    Сбор рыночных данных для 1h, 4h, 1d таймфреймов
+    
+    ИСПРАВЛЕНИЕ: Увеличено количество загружаемых свечей:
+    - 1h: 300 свечей (было 100)
+    - 4h: 200 свечей (было 100)
+    - 1d: 100 свечей (было 100)
+    """
     logger.info("🔄 CryptoMicky Price Collector started (1H, 4H, 1D)")
     
-    # Загружаем исторические данные для всех таймфреймов
+    # Загружаем исторические данные
     logger.info("📥 Loading historical data for all timeframes...")
-    timeframes = ['1h', '4h', '1d']
+    
+    # ИСПРАВЛЕНИЕ: Увеличены лимиты загрузки
+    timeframes_config = {
+        '1h': 300,  # Было 100, стало 300
+        '4h': 200,  # Было 100, стало 200
+        '1d': 100   # Было 100, осталось 100
+    }
     
     for pair in DEFAULT_PAIRS:
-        for tf in timeframes:
+        for tf, limit in timeframes_config.items():
             try:
-                candles = await fetch_candles_binance(pair, tf, 100)
+                logger.info(f"  🔄 Loading {pair} {tf}: {limit} candles...")
+                candles = await fetch_candles_binance(pair, tf, limit)
                 if candles:
                     for candle in candles:
                         CANDLES.add_candle(pair, tf, candle)
-                    logger.info(f"✅ Loaded {len(candles)} candles for {pair} {tf}")
+                    logger.info(f"  ✅ Loaded {len(candles)} candles for {pair} {tf}")
+                else:
+                    logger.warning(f"  ⚠️  Failed to load {pair} {tf}")
                 await asyncio.sleep(0.3)
             except Exception as e:
-                logger.error(f"Error loading {pair} {tf}: {e}")
+                logger.error(f"  ❌ Error loading {pair} {tf}: {e}")
     
     logger.info("✅ Historical data loaded!")
+    
+    # Выводим статистику
+    for pair in DEFAULT_PAIRS:
+        candles_1h = len(CANDLES.get_candles(pair, "1h"))
+        candles_4h = len(CANDLES.get_candles(pair, "4h"))
+        candles_1d = len(CANDLES.get_candles(pair, "1d"))
+        
+        status = "✅" if (candles_1h >= 100 and candles_4h >= 100 and candles_1d >= 30) else "⚠️"
+        logger.info(f"{status} {pair}: 1h={candles_1h}, 4h={candles_4h}, 1d={candles_1d}")
     
     # Регулярное обновление
     async with httpx.AsyncClient() as client:
@@ -86,9 +110,14 @@ async def price_collector(bot: Bot):
                 await asyncio.sleep(60)
 
 async def signal_analyzer(bot: Bot):
-    """Анализ и отправка сигналов с CryptoMicky алгоритмом"""
+    """
+    Анализ и отправка сигналов с CryptoMicky алгоритмом
+    
+    ИСПРАВЛЕНИЕ: Добавлены детальные логи для отладки
+    """
     logger.info("🎯 CryptoMicky Signal Analyzer started")
     
+    # Ждём загрузки данных
     await asyncio.sleep(10)
     
     while True:
@@ -106,6 +135,7 @@ async def signal_analyzer(bot: Bot):
                 # Проверка лимита
                 signals_today = await count_signals_today(pair)
                 if signals_today >= MAX_SIGNALS_PER_DAY:
+                    logger.debug(f"⏭️  {pair}: Daily limit reached ({signals_today}/{MAX_SIGNALS_PER_DAY})")
                     continue
                 
                 # Cooldown
@@ -122,9 +152,12 @@ async def signal_analyzer(bot: Bot):
                 candles_1d = CANDLES.get_candles(pair, "1d")
                 btc_candles_1h = CANDLES.get_candles("BTCUSDT", "1h")
                 
-                if len(candles_1h) < 100 or len(candles_4h) < 50 or len(candles_1d) < 30:
-                    logger.debug(f"⚠️ {pair}: Not enough candles for analysis")
+                # ИСПРАВЛЕНИЕ: Новые требования к данным
+                if len(candles_1h) < 100 or len(candles_4h) < 100 or len(candles_1d) < 30:
+                    logger.debug(f"⚠️  {pair}: Not enough candles (1h={len(candles_1h)}, 4h={len(candles_4h)}, 1d={len(candles_1d)})")
                     continue
+                
+                logger.debug(f"🔍 Analyzing {pair} (1h={len(candles_1h)}, 4h={len(candles_4h)}, 1d={len(candles_1d)} candles)...")
                 
                 signal = crypto_micky_analyzer.analyze_pair(
                     pair, candles_1h, candles_4h, candles_1d, btc_candles_1h
@@ -138,7 +171,7 @@ async def signal_analyzer(bot: Bot):
                     confidence_pct = signal['confidence']
                     if confidence_pct >= 90:
                         confidence_level = "HIGH"
-                    elif confidence_pct >= 80:
+                    elif confidence_pct >= 60:
                         confidence_level = "MEDIUM"
                     else:
                         confidence_level = "LOW"
@@ -160,7 +193,7 @@ async def signal_analyzer(bot: Bot):
                     text += f"   TP3: {signal['take_profit_3']:.2f}\n"
                     text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.2f}\n\n"
                     text += f"💰 <b>Объём позиции:</b> {signal['position_size']}\n"
-                    text += f"📊 <b>Confidence:</b> {confidence_level}\n\n"
+                    text += f"📊 <b>Confidence:</b> {confidence_level} ({confidence_pct}%)\n\n"
                     text += "⚠️ <i>Не финансовый совет</i>"
                     
                     # Отправка
@@ -173,11 +206,15 @@ async def signal_analyzer(bot: Bot):
                     
                     LAST_SIGNALS[pair] = current_time
                     logger.info(f"✅ Signal sent: {pair} {signal['side']} to {sent_count} users")
+                else:
+                    logger.debug(f"⏭️  {pair}: No signal found")
             
             if signals_found > 0:
                 logger.info(f"📊 Total signals found: {signals_found}")
+            else:
+                logger.debug("⏭️  No signals found in this cycle")
             
         except Exception as e:
-            logger.error(f"Signal analyzer error: {e}")
+            logger.error(f"Signal analyzer error: {e}", exc_info=True)
         
         await asyncio.sleep(60)
