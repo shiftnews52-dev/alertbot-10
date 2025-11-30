@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: alpha-entry-bot
+    restart: unless-stopped
+    
+    # Переменные окружения
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - SUPPORT_URL=${SUPPORT_URL:-https://t.me/support}
+      - BOT_NAME=${BOT_NAME:-Alpha Entry Bot}
+      - DB_PATH=/app/data/bot.db
+    
+    # Монтируем том для БД
+    volumes:
+      - ./data:/app/data
+    
+    # Логи
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Использование:
+# 1. Создай .env файл с BOT_TOKEN и ADMIN_IDS
+# 2. Запусти: docker-compose up -d
+# 3. Логи: docker-compose logs -f
+# 4. Остановка: docker-compose down
