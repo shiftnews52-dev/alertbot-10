@@ -7,7 +7,7 @@ from database import (
     add_user, get_user_lang, set_user_lang, is_paid, get_user_pairs,
     add_user_pair, remove_user_pair, get_balance, grant_access, revoke_access,
     get_total_users, get_paid_users_count, get_all_paid_users, get_subscription_info,
-    db_pool
+    db_pool, user_exists
 )
 from config import ADMIN_IDS, SUPPORT_URL, DEFAULT_PAIRS
 from payment_handlers import show_payment_menu, handle_plan_selection, handle_payment_check
@@ -154,27 +154,16 @@ async def cmd_start(message: types.Message):
     if args and args.isdigit():
         invited_by = int(args)
     
-    # Проверяем есть ли язык у пользователя
+    # Проверяем существует ли пользователь
+    is_new_user = not await user_exists(user_id)
+    
+    if is_new_user:
+        # Новый пользователь - показываем выбор языка
+        await show_language_selection(message, invited_by)
+        return
+    
+    # Существующий пользователь - продолжаем как обычно
     lang = await get_user_lang(user_id)
-    
-    # Если язык не установлен (новый пользователь) - показываем выбор языка
-    if not lang or lang == "ru":  # Для существующих пользователей тоже можем показать выбор
-        # Проверяем, это новый пользователь или старый
-        conn = await db_pool.acquire()
-        try:
-            cursor = await conn.execute("SELECT id FROM users WHERE id=?", (user_id,))
-            existing_user = await cursor.fetchone()
-        finally:
-            await db_pool.release(conn)
-        
-        if not existing_user:
-            # Новый пользователь - показываем выбор языка
-            await show_language_selection(message, invited_by)
-            return
-    
-    # Добавляем пользователя (если ещё не добавлен)
-    await add_user(user_id, lang=lang, invited_by=invited_by)
-    
     paid = await is_paid(user_id)
     
     # Приветствие
