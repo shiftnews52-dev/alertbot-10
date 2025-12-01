@@ -15,8 +15,16 @@ from database import (
 from config import ADMIN_IDS, SUPPORT_URL, DEFAULT_PAIRS
 from payment_handlers import show_payment_menu, handle_plan_selection, handle_payment_check
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+# Картинки из Environment Variables
+IMG_START = os.getenv("IMG_START", "")
+IMG_ALERTS = os.getenv("IMG_ALERTS", "")
+IMG_GUIDE = os.getenv("IMG_GUIDE", "")
+IMG_PAYWALL = os.getenv("IMG_PAYWALL", "")
+IMG_REF = os.getenv("IMG_REF", "")
 
 # ==================== ВЫБОР ЯЗЫКА ====================
 async def show_language_selection(message: types.Message, invited_by: int = None):
@@ -93,7 +101,15 @@ async def show_welcome_message(message: types.Message, user_id: int, lang: str):
         text += "📖 Жми <b>Инструкция</b> для деталей"
     
     kb = await get_main_menu(user_id)
-    await message.answer(text, reply_markup=kb)
+    
+    # Отправляем с картинкой
+    if IMG_START:
+        try:
+            await message.answer_photo(IMG_START, caption=text, reply_markup=kb)
+        except:
+            await message.answer(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
 
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 async def get_main_menu(user_id: int):
@@ -215,13 +231,13 @@ async def cmd_start(message: types.Message):
     
     kb = await get_main_menu(user_id)
     
-    # Отправляем с картинкой если она есть
-    try:
-        # Пробуем отправить с картинкой (замени на свою ссылку)
-        photo_url = "https://i.imgur.com/your-image.jpg"  # ЗАМЕНИ НА СВОЮ КАРТИНКУ!
-        await message.answer_photo(photo_url, caption=text, reply_markup=kb)
-    except:
-        # Если картинка не работает, отправляем текст
+    # Отправляем с картинкой
+    if IMG_START:
+        try:
+            await message.answer_photo(IMG_START, caption=text, reply_markup=kb)
+        except:
+            await message.answer(text, reply_markup=kb)
+    else:
         await message.answer(text, reply_markup=kb)
 
 # ==================== МЕНЮ АЛЕРТОВ ====================
@@ -270,7 +286,14 @@ async def show_alerts_menu(message: types.Message):
     back_text = "⬅️ Back" if lang == "en" else "⬅️ Назад"
     kb.add(InlineKeyboardButton(back_text, callback_data="back_main"))
     
-    await message.answer(text, reply_markup=kb)
+    # Отправляем с картинкой
+    if IMG_ALERTS:
+        try:
+            await message.answer_photo(IMG_ALERTS, caption=text, reply_markup=kb)
+        except:
+            await message.answer(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
 
 # ==================== ИНСТРУКЦИЯ ====================
 async def show_guide(message: types.Message):
@@ -320,7 +343,14 @@ async def show_guide(message: types.Message):
         text += "<b>Мин. score:</b> 70/100\n\n"
         text += "💬 Вопросы? Нажми Поддержка"
     
-    await message.answer(text)
+    # Отправляем с картинкой
+    if IMG_GUIDE:
+        try:
+            await message.answer_photo(IMG_GUIDE, caption=text)
+        except:
+            await message.answer(text)
+    else:
+        await message.answer(text)
 
 # ==================== ПОДДЕРЖКА ====================
 async def show_support(message: types.Message):
@@ -399,7 +429,14 @@ async def show_referral(message: types.Message):
         text += f"• Вывод в любое время\n\n"
         text += f"Делись ссылкой и зарабатывай! 🚀"
     
-    await message.answer(text)
+    # Отправляем с картинкой
+    if IMG_REF:
+        try:
+            await message.answer_photo(IMG_REF, caption=text)
+        except:
+            await message.answer(text)
+    else:
+        await message.answer(text)
 
 # ==================== ПРОМОКОДЫ ====================
 from aiogram.dispatcher import FSMContext
