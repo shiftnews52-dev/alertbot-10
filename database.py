@@ -356,4 +356,20 @@ async def get_paid_users_count() -> int:
         return row[0] if row else 0
     finally:
         await db_pool.release(conn)
-    
+
+async def get_all_user_ids() -> list:
+    """Получить ID всех пользователей"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT id FROM users")
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+    finally:
+        await db_pool.release(conn)
+
+async def close_db():
+    """Закрыть соединение с базой данных"""
+    global db_pool
+    if db_pool:
+        await db_pool.close_all()
+        logger.info("✅ Database connection closed")
