@@ -620,8 +620,22 @@ async def show_admin_panel(message: types.Message):
     kb.add(InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"))
     kb.add(InlineKeyboardButton("✅ Grant Access", callback_data="admin_grant"))
     kb.add(InlineKeyboardButton("❌ Revoke Access", callback_data="admin_revoke"))
+    kb.add(InlineKeyboardButton("🧪 Test Signal", callback_data="admin_test_signal"))
     
     await message.answer(text, reply_markup=kb)
+
+# ==================== ТЕСТ СИГНАЛА ====================
+async def test_signal_command(message: types.Message):
+    """Команда для тестирования генерации сигналов"""
+    user_id = message.from_user.id
+    
+    if user_id not in ADMIN_IDS:
+        return
+    
+    await message.answer("🔍 Генерирую тестовый сигнал...")
+    
+    from scheduler import send_test_signal
+    await send_test_signal(message.bot, user_id)
 
 # ==================== CALLBACK ОБРАБОТЧИКИ ====================
 async def handle_callbacks(call: types.CallbackQuery):
@@ -664,6 +678,16 @@ async def handle_callbacks(call: types.CallbackQuery):
             return
         await call.message.answer("Send user ID to revoke access:")
         # TODO: Реализовать FSM для получения ID
+    
+    # Админ: тест сигнала
+    elif data == "admin_test_signal":
+        if user_id not in ADMIN_IDS:
+            await call.answer("❌ Access denied")
+            return
+        await call.message.answer("🔍 Генерирую тестовый сигнал...")
+        from scheduler import send_test_signal
+        await send_test_signal(call.message.bot, user_id)
+        await call.answer("✅")
 
 # ==================== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ====================
 def setup_handlers(dp: Dispatcher):
@@ -672,6 +696,7 @@ def setup_handlers(dp: Dispatcher):
     # Команды
     dp.register_message_handler(cmd_start, commands=["start"], state="*")
     dp.register_message_handler(show_admin_panel, commands=["admin"])
+    dp.register_message_handler(test_signal_command, commands=["test_signal"])
     
     # Кнопка промокода
     dp.register_message_handler(
