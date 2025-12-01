@@ -105,6 +105,7 @@ async def get_main_menu(user_id: int):
     
     if lang == "en":
         if paid:
+            # Для оплативших: Alerts, Referrals (БЕЗ статистики)
             kb.add(
                 KeyboardButton("📈 Alerts"),
                 KeyboardButton("👥 Referrals")
@@ -113,18 +114,20 @@ async def get_main_menu(user_id: int):
                 KeyboardButton("📖 Guide"),
                 KeyboardButton("💬 Support")
             )
-            kb.add(KeyboardButton("📊 Statistics"))
         else:
+            # Для не оплативших: Referrals идёт ПЕРЕД Get Access
             kb.add(
-                KeyboardButton("🔓 Get Access"),
-                KeyboardButton("🎁 Promo Code")
+                KeyboardButton("👥 Referrals"),
+                KeyboardButton("🔓 Get Access")
             )
+            kb.add(KeyboardButton("🎁 Promo Code"))
             kb.add(
                 KeyboardButton("📖 Guide"),
                 KeyboardButton("💬 Support")
             )
     else:
         if paid:
+            # Для оплативших: Алерты, Рефералка (БЕЗ статистики)
             kb.add(
                 KeyboardButton("📈 Алерты"),
                 KeyboardButton("👥 Рефералка")
@@ -133,12 +136,13 @@ async def get_main_menu(user_id: int):
                 KeyboardButton("📖 Инструкция"),
                 KeyboardButton("💬 Поддержка")
             )
-            kb.add(KeyboardButton("📊 Статистика"))
         else:
+            # Для не оплативших: Рефералка идёт ПЕРЕД Открыть доступ
             kb.add(
-                KeyboardButton("🔓 Открыть доступ"),
-                KeyboardButton("🎁 Промокод")
+                KeyboardButton("👥 Рефералка"),
+                KeyboardButton("🔓 Открыть доступ")
             )
+            kb.add(KeyboardButton("🎁 Промокод"))
             kb.add(
                 KeyboardButton("📖 Инструкция"),
                 KeyboardButton("💬 Поддержка")
@@ -210,7 +214,15 @@ async def cmd_start(message: types.Message):
         text += "📖 Жми <b>Инструкция</b> для деталей"
     
     kb = await get_main_menu(user_id)
-    await message.answer(text, reply_markup=kb)
+    
+    # Отправляем с картинкой если она есть
+    try:
+        # Пробуем отправить с картинкой (замени на свою ссылку)
+        photo_url = "https://i.imgur.com/your-image.jpg"  # ЗАМЕНИ НА СВОЮ КАРТИНКУ!
+        await message.answer_photo(photo_url, caption=text, reply_markup=kb)
+    except:
+        # Если картинка не работает, отправляем текст
+        await message.answer(text, reply_markup=kb)
 
 # ==================== МЕНЮ АЛЕРТОВ ====================
 async def show_alerts_menu(message: types.Message):
@@ -329,6 +341,65 @@ async def show_support(message: types.Message):
     kb.add(InlineKeyboardButton(support_text, url=SUPPORT_URL))
     
     await message.answer(text, reply_markup=kb)
+
+# ==================== РЕФЕРАЛКА ====================
+async def show_referral(message: types.Message):
+    """Показать реферальную программу"""
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    
+    # Создаём реферальную ссылку
+    bot_username = (await message.bot.get_me()).username
+    referral_link = f"https://t.me/{bot_username}?start={user_id}"
+    
+    # Получаем статистику рефералов
+    conn = await db_pool.acquire()
+    try:
+        # Считаем сколько людей пришло по реферальной ссылке
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE invited_by=?",
+            (user_id,)
+        )
+        referrals_count = (await cursor.fetchone())[0]
+        
+        # Считаем сколько из них оплатило
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE invited_by=? AND paid=1",
+            (user_id,)
+        )
+        paid_referrals = (await cursor.fetchone())[0]
+    finally:
+        await db_pool.release(conn)
+    
+    # Получаем баланс
+    balance = await get_balance(user_id)
+    
+    if lang == "en":
+        text = "👥 <b>Referral Program</b>\n\n"
+        text += f"Your referral link:\n"
+        text += f"<code>{referral_link}</code>\n\n"
+        text += f"📊 <b>Statistics:</b>\n"
+        text += f"• Referrals: {referrals_count}\n"
+        text += f"• Paid: {paid_referrals}\n"
+        text += f"• Balance: ${balance:.2f}\n\n"
+        text += f"💰 <b>Rewards:</b>\n"
+        text += f"• 20% from each payment\n"
+        text += f"• Withdraw anytime\n\n"
+        text += f"Share your link and earn! 🚀"
+    else:
+        text = "👥 <b>Реферальная программа</b>\n\n"
+        text += f"Твоя реферальная ссылка:\n"
+        text += f"<code>{referral_link}</code>\n\n"
+        text += f"📊 <b>Статистика:</b>\n"
+        text += f"• Рефералов: {referrals_count}\n"
+        text += f"• Оплатило: {paid_referrals}\n"
+        text += f"• Баланс: ${balance:.2f}\n\n"
+        text += f"💰 <b>Вознаграждения:</b>\n"
+        text += f"• 20% с каждой оплаты\n"
+        text += f"• Вывод в любое время\n\n"
+        text += f"Делись ссылкой и зарабатывай! 🚀"
+    
+    await message.answer(text)
 
 # ==================== ПРОМОКОДЫ ====================
 from aiogram.dispatcher import FSMContext
@@ -581,8 +652,8 @@ def setup_handlers(dp: Dispatcher):
         lambda m: m.text in ["💬 Support", "💬 Поддержка"]
     )
     dp.register_message_handler(
-        show_stats,
-        lambda m: m.text in ["📊 Statistics", "📊 Статистика"]
+        show_referral,
+        lambda m: m.text in ["👥 Referrals", "👥 Рефералка"]
     )
     
     # Кнопка "Открыть доступ" - показываем меню оплаты
