@@ -376,67 +376,78 @@ async def show_support(message: types.Message):
 async def show_referral(message: types.Message):
     """Показать реферальную программу"""
     user_id = message.from_user.id
-    lang = await get_user_lang(user_id)
+    lang = "ru"  # Дефолтный язык
     
-    # Создаём реферальную ссылку
-    bot_username = (await message.bot.get_me()).username
-    referral_link = f"https://t.me/{bot_username}?start={user_id}"
-    
-    # Получаем статистику рефералов
-    conn = await db_pool.acquire()
     try:
-        # Считаем сколько людей пришло по реферальной ссылке
-        cursor = await conn.execute(
-            "SELECT COUNT(*) FROM users WHERE invited_by=?",
-            (user_id,)
-        )
-        referrals_count = (await cursor.fetchone())[0]
+        lang = await get_user_lang(user_id)
         
-        # Считаем сколько из них оплатило
-        cursor = await conn.execute(
-            "SELECT COUNT(*) FROM users WHERE invited_by=? AND paid=1",
-            (user_id,)
-        )
-        paid_referrals = (await cursor.fetchone())[0]
-    finally:
-        await db_pool.release(conn)
-    
-    # Получаем баланс
-    balance = await get_balance(user_id)
-    
-    if lang == "en":
-        text = "👥 <b>Referral Program</b>\n\n"
-        text += f"Your referral link:\n"
-        text += f"<code>{referral_link}</code>\n\n"
-        text += f"📊 <b>Statistics:</b>\n"
-        text += f"• Referrals: {referrals_count}\n"
-        text += f"• Paid: {paid_referrals}\n"
-        text += f"• Balance: ${balance:.2f}\n\n"
-        text += f"💰 <b>Rewards:</b>\n"
-        text += f"• 20% from each payment\n"
-        text += f"• Withdraw anytime\n\n"
-        text += f"Share your link and earn! 🚀"
-    else:
-        text = "👥 <b>Реферальная программа</b>\n\n"
-        text += f"Твоя реферальная ссылка:\n"
-        text += f"<code>{referral_link}</code>\n\n"
-        text += f"📊 <b>Статистика:</b>\n"
-        text += f"• Рефералов: {referrals_count}\n"
-        text += f"• Оплатило: {paid_referrals}\n"
-        text += f"• Баланс: ${balance:.2f}\n\n"
-        text += f"💰 <b>Вознаграждения:</b>\n"
-        text += f"• 20% с каждой оплаты\n"
-        text += f"• Вывод в любое время\n\n"
-        text += f"Делись ссылкой и зарабатывай! 🚀"
-    
-    # Отправляем с картинкой
-    if IMG_REF:
+        # Создаём реферальную ссылку
+        bot_username = (await message.bot.get_me()).username
+        referral_link = f"https://t.me/{bot_username}?start={user_id}"
+        
+        # Получаем статистику рефералов
+        conn = await db_pool.acquire()
         try:
-            await message.answer_photo(IMG_REF, caption=text)
-        except:
+            # Считаем сколько людей пришло по реферальной ссылке
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM users WHERE invited_by=?",
+                (user_id,)
+            )
+            result = await cursor.fetchone()
+            referrals_count = result[0] if result else 0
+            
+            # Считаем сколько из них оплатило
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM users WHERE invited_by=? AND paid=1",
+                (user_id,)
+            )
+            result = await cursor.fetchone()
+            paid_referrals = result[0] if result else 0
+        finally:
+            await db_pool.release(conn)
+        
+        # Получаем баланс
+        balance = await get_balance(user_id)
+        
+        if lang == "en":
+            text = "👥 <b>Referral Program</b>\n\n"
+            text += f"Your referral link:\n"
+            text += f"<code>{referral_link}</code>\n\n"
+            text += f"📊 <b>Statistics:</b>\n"
+            text += f"• Referrals: {referrals_count}\n"
+            text += f"• Paid: {paid_referrals}\n"
+            text += f"• Balance: ${balance:.2f}\n\n"
+            text += f"💰 <b>Rewards:</b>\n"
+            text += f"• 20% from each payment\n"
+            text += f"• Withdraw anytime\n\n"
+            text += f"Share your link and earn! 🚀"
+        else:
+            text = "👥 <b>Реферальная программа</b>\n\n"
+            text += f"Твоя реферальная ссылка:\n"
+            text += f"<code>{referral_link}</code>\n\n"
+            text += f"📊 <b>Статистика:</b>\n"
+            text += f"• Рефералов: {referrals_count}\n"
+            text += f"• Оплатило: {paid_referrals}\n"
+            text += f"• Баланс: ${balance:.2f}\n\n"
+            text += f"💰 <b>Вознаграждения:</b>\n"
+            text += f"• 20% с каждой оплаты\n"
+            text += f"• Вывод в любое время\n\n"
+            text += f"Делись ссылкой и зарабатывай! 🚀"
+        
+        # Отправляем с картинкой
+        if IMG_REF:
+            try:
+                await message.answer_photo(IMG_REF, caption=text)
+            except Exception as e:
+                logger.error(f"Error sending photo in show_referral: {e}")
+                await message.answer(text)
+        else:
             await message.answer(text)
-    else:
-        await message.answer(text)
+            
+    except Exception as e:
+        logger.error(f"Error in show_referral: {e}")
+        error_text = "❌ Error loading referral info" if lang == "en" else "❌ Ошибка загрузки реферальной информации"
+        await message.answer(error_text)
 
 # ==================== ПРОМОКОДЫ ====================
 from aiogram.dispatcher import FSMContext
