@@ -12,6 +12,7 @@ from config import BOT_TOKEN
 from database import init_db
 from handlers import setup_handlers
 from crypto_payment import handle_crypto_webhook
+from scheduler import signal_scheduler
 
 # Настройка логирования
 logging.basicConfig(
@@ -104,6 +105,12 @@ async def main():
     try:
         # Запуск polling
         await on_startup(dp)
+        
+        # Запуск планировщика сигналов в фоне
+        asyncio.create_task(signal_scheduler(bot))
+        logger.info("✅ Signal scheduler started in background")
+        
+        # Запуск бота
         await dp.start_polling()
     except Exception as e:
         logger.error(f"Fatal error: {e}")
