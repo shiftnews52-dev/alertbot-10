@@ -9,10 +9,13 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiohttp import web
 
 from config import BOT_TOKEN
-from database import init_db
+from database import init_db, close_db
 from handlers import setup_handlers
 from crypto_payment import handle_crypto_webhook
+from payment_handlers import setup_payment_handlers
 from scheduler import signal_scheduler
+from pnl_tracker import pnl_tracker
+from pnl_tasks import track_signals_pnl
 
 # Настройка логирования
 logging.basicConfig(
@@ -61,6 +64,10 @@ async def on_startup(dp):
     await init_db()
     logger.info("✅ Database initialized")
     
+    # Инициализация PnL tracker
+    await pnl_tracker.init_db()
+    logger.info("✅ PnL tracker initialized")
+    
     # Удаляем вебхук (для polling)
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Webhook deleted")
@@ -68,6 +75,10 @@ async def on_startup(dp):
     # Регистрируем обработчики
     setup_handlers(dp)
     logger.info("✅ Handlers registered")
+    
+    # Регистрируем платёжные обработчики
+    setup_payment_handlers(dp, bot)
+    logger.info("✅ Payment handlers registered")
     
     # Запускаем HTTP сервер для вебхуков
     app = web.Application()
@@ -94,6 +105,7 @@ async def on_shutdown(dp):
     logger.info("Bot shutting down...")
     
     # Закрываем соединения
+    await close_db()
     await bot.close()
     await storage.close()
     
@@ -109,6 +121,10 @@ async def main():
         # Запуск планировщика сигналов в фоне
         asyncio.create_task(signal_scheduler(bot))
         logger.info("✅ Signal scheduler started in background")
+        
+        # Запуск PnL трекера в фоне
+        asyncio.create_task(track_signals_pnl(bot))
+        logger.info("✅ PnL tracker started in background")
         
         # Запуск бота
         await dp.start_polling()
