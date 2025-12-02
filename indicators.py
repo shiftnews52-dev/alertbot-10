@@ -1,5 +1,9 @@
 """
-indicators.py - Профессиональная логика анализа (С fetch_price)
+indicators.py - Профессиональная логика анализа (ИСПРАВЛЕНО)
+ИСПРАВЛЕНИЯ:
+1. Добавлен таймфрейм 1d в tf_map
+2. Добавлены недостающие функции для test_indicators.py
+3. Улучшен расчёт ATR и TP/SL
 """
 import time
 import logging
@@ -71,7 +75,8 @@ async def fetch_candles_binance(pair: str, tf: str, limit: int = 100):
     """Получение свечей с Binance"""
     try:
         async with httpx.AsyncClient() as client:
-            tf_map = {"1h": "1h", "4h": "4h"}
+            # ИСПРАВЛЕНИЕ: Добавлен 1d таймфрейм
+            tf_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
             interval = tf_map.get(tf, "1h")
             
             url = f"https://api.binance.com/api/v3/klines"
@@ -128,20 +133,41 @@ def calculate_rsi(closes: List[float], period: int = RSI_PERIOD) -> Optional[flo
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+
+# Алиас для совместимости с test_indicators.py
+def rsi(closes: List[float], period: int = RSI_PERIOD) -> Optional[float]:
+    """Алиас для calculate_rsi"""
+    return calculate_rsi(closes, period)
+
+
 def calculate_ema(values: List[float], period: int) -> Optional[float]:
     """Exponential Moving Average"""
     if len(values) < period:
         return None
     
     k = 2 / (period + 1)
-    ema = values[0]
+    ema_val = values[0]
     for value in values[1:]:
-        ema = value * k + ema * (1 - k)
-    return ema
+        ema_val = value * k + ema_val * (1 - k)
+    return ema_val
+
+
+# Алиас для совместимости с test_indicators.py
+def ema(values: List[float], period: int) -> Optional[float]:
+    """Алиас для calculate_ema"""
+    return calculate_ema(values, period)
+
+
+def sma(values: List[float], period: int) -> Optional[float]:
+    """Simple Moving Average"""
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
+
 
 def calculate_macd(closes: List[float]) -> Optional[Tuple[float, float, float]]:
-    """Упрощённый MACD"""
-    if len(closes) < MACD_SLOW:
+    """MACD с сигнальной линией и гистограммой"""
+    if len(closes) < MACD_SLOW + MACD_SIGNAL:
         return None
     
     ema_fast = calculate_ema(closes, MACD_FAST)
@@ -151,7 +177,131 @@ def calculate_macd(closes: List[float]) -> Optional[Tuple[float, float, float]]:
         return None
     
     macd_line = ema_fast - ema_slow
-    return macd_line, 0, 0
+    
+    # Рассчитываем MACD для всех точек чтобы получить сигнальную линию
+    macd_values = []
+    for i in range(MACD_SLOW, len(closes) + 1):
+        ema_f = calculate_ema(closes[:i], MACD_FAST)
+        ema_s = calculate_ema(closes[:i], MACD_SLOW)
+        if ema_f and ema_s:
+            macd_values.append(ema_f - ema_s)
+    
+    if len(macd_values) < MACD_SIGNAL:
+        signal_line = macd_line
+    else:
+        signal_line = calculate_ema(macd_values, MACD_SIGNAL)
+        if signal_line is None:
+            signal_line = macd_line
+    
+    histogram = macd_line - signal_line
+    
+    return macd_line, signal_line, histogram
+
+
+# Алиас для совместимости с test_indicators.py
+def macd(closes: List[float]) -> Optional[Tuple[float, float, float]]:
+    """Алиас для calculate_macd"""
+    return calculate_macd(closes)
+
+
+def bollinger_bands(closes: List[float], period: int = BB_PERIOD, std_dev: float = BB_STD) -> Optional[Tuple[float, float, float]]:
+    """Bollinger Bands"""
+    if len(closes) < period:
+        return None
+    
+    recent = closes[-period:]
+    middle = sum(recent) / period
+    
+    # Стандартное отклонение
+    variance = sum((x - middle) ** 2 for x in recent) / period
+    std = variance ** 0.5
+    
+    upper = middle + (std * std_dev)
+    lower = middle - (std * std_dev)
+    
+    return upper, middle, lower
+
+
+def volume_strength(candles: List[dict], period: int = 20) -> Optional[float]:
+    """Сила объёма относительно среднего"""
+    if len(candles) < period:
+        return None
+    
+    volumes = [c.get('v', 0) for c in candles[-period:]]
+    avg_volume = sum(volumes[:-1]) / (period - 1) if period > 1 else volumes[0]
+    
+    if avg_volume == 0:
+        return None
+    
+    current_volume = volumes[-1]
+    return current_volume / avg_volume
+
+
+def atr(candles: List[dict], period: int = 14) -> Optional[float]:
+    """Average True Range"""
+    if len(candles) < period + 1:
+        return None
+    
+    true_ranges = []
+    for i in range(1, len(candles)):
+        high = candles[i].get('h', 0)
+        low = candles[i].get('l', 0)
+        prev_close = candles[i-1].get('c', 0)
+        
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        true_ranges.append(tr)
+    
+    if len(true_ranges) < period:
+        return None
+    
+    return sum(true_ranges[-period:]) / period
+
+
+def calculate_tp_sl(entry: float, side: str, atr_value: float) -> Dict:
+    """
+    Расчёт Take Profit и Stop Loss на основе ATR
+    
+    Risk/Reward:
+    - TP1: 2:1 (2x ATR от входа)
+    - TP2: 4:1 (4x ATR от входа)
+    - TP3: 6:1 (6x ATR от входа)
+    - SL: 1x ATR
+    """
+    if side.upper() == 'LONG':
+        stop_loss = entry - atr_value
+        tp1 = entry + (atr_value * 2)
+        tp2 = entry + (atr_value * 4)
+        tp3 = entry + (atr_value * 6)
+    else:  # SHORT
+        stop_loss = entry + atr_value
+        tp1 = entry - (atr_value * 2)
+        tp2 = entry - (atr_value * 4)
+        tp3 = entry - (atr_value * 6)
+    
+    # Расчёт процентов
+    sl_percent = abs((stop_loss - entry) / entry * 100)
+    tp1_percent = abs((tp1 - entry) / entry * 100)
+    tp2_percent = abs((tp2 - entry) / entry * 100)
+    tp3_percent = abs((tp3 - entry) / entry * 100)
+    
+    return {
+        'stop_loss': stop_loss,
+        'take_profit_1': tp1,
+        'take_profit_2': tp2,
+        'take_profit_3': tp3,
+        'sl_percent': sl_percent,
+        'tp1_percent': tp1_percent,
+        'tp2_percent': tp2_percent,
+        'tp3_percent': tp3_percent,
+        'risk_reward_1': round(tp1_percent / sl_percent, 1) if sl_percent > 0 else 0,
+        'risk_reward_2': round(tp2_percent / sl_percent, 1) if sl_percent > 0 else 0,
+        'risk_reward_3': round(tp3_percent / sl_percent, 1) if sl_percent > 0 else 0,
+    }
+
 
 # ==================== АНАЛИЗ ТРЕНДА ====================
 def determine_trend(closes: List[float]) -> str:
@@ -165,8 +315,8 @@ def determine_trend(closes: List[float]) -> str:
     lows = sum(1 for i in range(1, len(recent)) if recent[i] < recent[i-1])
     
     # RSI анализ
-    rsi = calculate_rsi(closes)
-    if rsi is None:
+    rsi_val = calculate_rsi(closes)
+    if rsi_val is None:
         return 'neutral'
     
     # EMA анализ
@@ -179,7 +329,7 @@ def determine_trend(closes: List[float]) -> str:
     # Бычьи условия
     if highs > lows:
         bull_conditions += 1
-    if rsi > 50:
+    if rsi_val > 50:
         bull_conditions += 1
     if ema_short and ema_long and ema_short > ema_long:
         bull_conditions += 1
@@ -187,7 +337,7 @@ def determine_trend(closes: List[float]) -> str:
     # Медвежьи условия
     if lows > highs:
         bear_conditions += 1
-    if rsi < 50:
+    if rsi_val < 50:
         bear_conditions += 1
     if ema_short and ema_long and ema_short < ema_long:
         bear_conditions += 1
@@ -256,6 +406,9 @@ def _filter_and_group_levels(levels: List[float], closes: List[float]) -> List[f
         if price_diff_pct <= 0.1:  # Не дальше 10%
             filtered_levels.append(level)
     
+    if not filtered_levels:
+        return []
+    
     # Группируем близкие уровни
     filtered_levels.sort()
     grouped = []
@@ -284,30 +437,31 @@ def analyze_signal(pair: str) -> Optional[Dict]:
     current_price = closes[-1]
     
     # Рассчитываем индикаторы
-    rsi = calculate_rsi(closes)
+    rsi_val = calculate_rsi(closes)
     trend = determine_trend(closes)
     supports, resistances = find_support_resistance_levels(candles_1h)
     macd_data = calculate_macd(closes)
+    atr_val = atr(candles_1h)
     
-    if rsi is None:
+    if rsi_val is None or atr_val is None:
         return None
     
     # Анализируем LONG
-    long_signal = _analyze_long_signal(current_price, trend, rsi, macd_data, supports, candles_1h)
+    long_signal = _analyze_long_signal(current_price, trend, rsi_val, macd_data, supports, candles_1h, atr_val)
     if long_signal:
         long_signal['pair'] = pair
         return long_signal
     
     # Анализируем SHORT
-    short_signal = _analyze_short_signal(current_price, trend, rsi, macd_data, resistances, candles_1h)
+    short_signal = _analyze_short_signal(current_price, trend, rsi_val, macd_data, resistances, candles_1h, atr_val)
     if short_signal:
         short_signal['pair'] = pair
         return short_signal
     
     return None
 
-def _analyze_long_signal(price: float, trend: str, rsi: float, macd_data: Optional[Tuple], 
-                        supports: List[float], candles: List[dict]) -> Optional[Dict]:
+def _analyze_long_signal(price: float, trend: str, rsi_val: float, macd_data: Optional[Tuple], 
+                        supports: List[float], candles: List[dict], atr_val: float) -> Optional[Dict]:
     """Анализ LONG сигнала"""
     # Находим ближайшую качественную поддержку
     best_support = None
@@ -334,12 +488,12 @@ def _analyze_long_signal(price: float, trend: str, rsi: float, macd_data: Option
         reasons.append("✅ Уровень поддержки")
     
     # 2. RSI анализ
-    if 30 <= rsi <= 45:
+    if 30 <= rsi_val <= 45:
         confidence += 25
-        reasons.append(f"📊 RSI для входа ({rsi:.1f})")
-    elif 25 <= rsi < 30 or 45 < rsi <= 50:
+        reasons.append(f"📊 RSI для входа ({rsi_val:.1f})")
+    elif 25 <= rsi_val < 30 or 45 < rsi_val <= 50:
         confidence += 15
-        reasons.append(f"📈 RSI приемлемый ({rsi:.1f})")
+        reasons.append(f"📈 RSI приемлемый ({rsi_val:.1f})")
     
     # 3. Тренд
     if trend == 'bullish':
@@ -360,12 +514,12 @@ def _analyze_long_signal(price: float, trend: str, rsi: float, macd_data: Option
         reasons.append("💰 Объёмы подтверждают")
     
     if confidence >= MIN_CONFIDENCE:
-        return _create_signal('LONG', price, best_support, confidence, reasons)
+        return _create_signal('LONG', price, best_support, confidence, reasons, atr_val)
     
     return None
 
-def _analyze_short_signal(price: float, trend: str, rsi: float, macd_data: Optional[Tuple],
-                         resistances: List[float], candles: List[dict]) -> Optional[Dict]:
+def _analyze_short_signal(price: float, trend: str, rsi_val: float, macd_data: Optional[Tuple],
+                         resistances: List[float], candles: List[dict], atr_val: float) -> Optional[Dict]:
     """Анализ SHORT сигнала"""
     # Находим ближайшее качественное сопротивление
     best_resistance = None
@@ -392,12 +546,12 @@ def _analyze_short_signal(price: float, trend: str, rsi: float, macd_data: Optio
         reasons.append("✅ Уровень сопротивления")
     
     # 2. RSI анализ
-    if 55 <= rsi <= 70:
+    if 55 <= rsi_val <= 70:
         confidence += 25
-        reasons.append(f"📊 RSI для входа ({rsi:.1f})")
-    elif 50 <= rsi < 55 or 70 < rsi <= 75:
+        reasons.append(f"📊 RSI для входа ({rsi_val:.1f})")
+    elif 50 <= rsi_val < 55 or 70 < rsi_val <= 75:
         confidence += 15
-        reasons.append(f"📈 RSI приемлемый ({rsi:.1f})")
+        reasons.append(f"📈 RSI приемлемый ({rsi_val:.1f})")
     
     # 3. Тренд
     if trend == 'bearish':
@@ -418,7 +572,7 @@ def _analyze_short_signal(price: float, trend: str, rsi: float, macd_data: Optio
         reasons.append("💰 Объёмы подтверждают")
     
     if confidence >= MIN_CONFIDENCE:
-        return _create_signal('SHORT', price, best_resistance, confidence, reasons)
+        return _create_signal('SHORT', price, best_resistance, confidence, reasons, atr_val)
     
     return None
 
@@ -441,18 +595,19 @@ def _check_volume_support(candles: List[dict], side: str) -> bool:
     # Для входа нужен повышенный объём
     return recent_volume > prev_volume * 0.8
 
-def _create_signal(side: str, price: float, level: float, confidence: int, reasons: List[str]) -> Dict:
-    """Создание сигнала"""
+def _create_signal(side: str, price: float, level: float, confidence: int, reasons: List[str], atr_val: float) -> Dict:
+    """Создание сигнала с ATR-based TP/SL"""
+    
+    # Зона входа
     if side == 'LONG':
         entry_min = level * (1 - ENTRY_ZONE_PERCENT / 100)
         entry_max = level * (1 + ENTRY_ZONE_PERCENT / 100)
-        stop_loss = level * (1 - STOP_PERCENT / 100)
-        take_profits = [price * 1.02, price * 1.04, price * 1.06]
     else:
         entry_min = level * (1 - ENTRY_ZONE_PERCENT / 100)
         entry_max = level * (1 + ENTRY_ZONE_PERCENT / 100)
-        stop_loss = level * (1 + STOP_PERCENT / 100)
-        take_profits = [price * 0.98, price * 0.96, price * 0.94]
+    
+    # Расчёт TP/SL на основе ATR
+    tp_sl = calculate_tp_sl(price, side, atr_val)
     
     position_size = _get_position_size(confidence)
     
@@ -460,18 +615,19 @@ def _create_signal(side: str, price: float, level: float, confidence: int, reaso
         'side': side,
         'price': price,
         'entry_zone': (entry_min, entry_max),
-        'stop_loss': stop_loss,
-        'take_profit_1': take_profits[0],
-        'take_profit_2': take_profits[1],
-        'take_profit_3': take_profits[2],
+        'stop_loss': tp_sl['stop_loss'],
+        'take_profit_1': tp_sl['take_profit_1'],
+        'take_profit_2': tp_sl['take_profit_2'],
+        'take_profit_3': tp_sl['take_profit_3'],
         'score': confidence,
         'confidence': confidence,
         'reasons': reasons,
         'position_size': position_size,
-        'sl_percent': abs((stop_loss - price) / price * 100),
-        'tp1_percent': abs((take_profits[0] - price) / price * 100),
-        'tp2_percent': abs((take_profits[1] - price) / price * 100),
-        'tp3_percent': abs((take_profits[2] - price) / price * 100)
+        'sl_percent': tp_sl['sl_percent'],
+        'tp1_percent': tp_sl['tp1_percent'],
+        'tp2_percent': tp_sl['tp2_percent'],
+        'tp3_percent': tp_sl['tp3_percent'],
+        'atr': atr_val
     }
 
 def _get_position_size(confidence: int) -> str:
