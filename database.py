@@ -372,3 +372,41 @@ async def close_db():
     if db_pool:
         await db_pool.close_all()
         logger.info("✅ Database connection closed")
+
+async def get_all_tracked_pairs() -> list:
+    """Получить все отслеживаемые пары (для Системы 2)"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT DISTINCT pair FROM user_pairs WHERE enabled=1"
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows] if rows else []
+    finally:
+        await db_pool.release(conn)
+
+async def get_pairs_with_users(pair: str) -> list:
+    """Получить список пользователей отслеживающих пару (для Системы 2)"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            """SELECT user_id FROM user_pairs 
+               WHERE pair=? AND enabled=1""",
+            (pair,)
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows] if rows else []
+    finally:
+        await db_pool.release(conn)
+
+async def count_signals_today(pair: str) -> int:
+    """Подсчитать сколько сигналов отправлено сегодня для пары (для Системы 2)"""
+    # Для совместимости возвращаем 0
+    # В будущем можно добавить таблицу signals_log
+    return 0
+
+async def log_signal(pair: str, side: str, entry_price: float, tp_levels: list, sl: float):
+    """Логировать отправленный сигнал (для Системы 2)"""
+    # Для совместимости ничего не делаем
+    # В будущем можно добавить таблицу signals_log
+    pass
