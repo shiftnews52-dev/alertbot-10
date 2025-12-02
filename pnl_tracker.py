@@ -65,11 +65,29 @@ class PnLTracker:
         self.db_path = db_path
     
     async def init_db(self):
-        """Инициализация таблиц PnL"""
+        """Инициализация таблиц PnL с миграцией для status"""
         async with aiosqlite.connect(self.db_path) as conn:
+            # Создаём таблицы
             await conn.executescript(PNL_SCHEMA)
+            
+            # МИГРАЦИЯ: Добавляем колонку status если её нет (для совместимости со старыми БД)
+            try:
+                # Проверяем есть ли колонка status
+                cursor = await conn.execute("PRAGMA table_info(active_signals)")
+                columns = await cursor.fetchall()
+                column_names = [col[1] for col in columns]
+                
+                if 'status' not in column_names:
+                    logger.info("Adding 'status' column to active_signals...")
+                    await conn.execute(
+                        "ALTER TABLE active_signals ADD COLUMN status TEXT DEFAULT 'active'"
+                    )
+                    logger.info("✅ Column 'status' added successfully")
+            except Exception as e:
+                logger.warning(f"Migration warning (probably ok): {e}")
+            
             await conn.commit()
-        logger.info("PnL tracker initialized")
+        logger.info("✅ PnL tracker initialized")
     
     async def add_signal(self, signal: Dict) -> int:
         """
