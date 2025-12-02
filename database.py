@@ -1,5 +1,6 @@
 """
 database.py - База данных с поддержкой платных подписок
+ИСПРАВЛЕНО: get_pairs_with_users, log_signal, добавлена таблица signal_logs
 """
 import aiosqlite
 import logging
@@ -9,7 +10,7 @@ from config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
-# SQL схема
+# SQL схема - ИСПРАВЛЕНО: добавлена таблица signal_logs
 INIT_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -65,6 +66,23 @@ CREATE TABLE IF NOT EXISTS closed_signals (
     duration_hours REAL,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+-- НОВАЯ ТАБЛИЦА: Логи отправленных сигналов
+CREATE TABLE IF NOT EXISTS signal_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pair TEXT NOT NULL,
+    side TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    tp1 REAL,
+    tp2 REAL,
+    tp3 REAL,
+    sl REAL,
+    score INTEGER,
+    created_ts INTEGER NOT NULL
+);
+
+-- Индекс для подсчёта сигналов за день
+CREATE INDEX IF NOT EXISTS idx_signal_logs_pair_ts ON signal_logs(pair, created_ts);
 """
 
 # Пул соединений
@@ -386,29 +404,101 @@ async def get_all_tracked_pairs() -> list:
     finally:
         await db_pool.release(conn)
 
-async def get_pairs_with_users(pair: str) -> list:
-    """Получить список пользователей отслеживающих пару (для Системы 2)"""
+
+# ==================== ИСПРАВЛЕНИЕ: Новая сигнатура ====================
+async def get_pairs_with_users() -> list:
+    """
+    Получить все пары с пользователями (для Системы 2)
+    ИСПРАВЛЕНО: Теперь возвращает список словарей с парой и user_id
+    
+    Returns:
+        [{"pair": "BTCUSDT", "user_id": 123}, ...]
+    """
     conn = await db_pool.acquire()
     try:
         cursor = await conn.execute(
-            """SELECT user_id FROM user_pairs 
-               WHERE pair=? AND enabled=1""",
-            (pair,)
+            """SELECT DISTINCT up.pair, up.user_id 
+               FROM user_pairs up
+               JOIN users u ON up.user_id = u.id
+               WHERE up.enabled=1 AND u.paid=1
+               AND (u.subscription_expiry IS NULL OR u.subscription_expiry > ?)""",
+            (int(datetime.now().timestamp()),)
+        )
+        rows = await cursor.fetchall()
+        return [{"pair": row[0], "user_id": row[1]} for row in rows] if rows else []
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_users_for_pair(pair: str) -> list:
+    """
+    Получить список пользователей отслеживающих конкретную пару
+    
+    Args:
+        pair: Торговая пара (например BTCUSDT)
+    
+    Returns:
+        [user_id, user_id, ...]
+    """
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            """SELECT up.user_id FROM user_pairs up
+               JOIN users u ON up.user_id = u.id
+               WHERE up.pair=? AND up.enabled=1 AND u.paid=1
+               AND (u.subscription_expiry IS NULL OR u.subscription_expiry > ?)""",
+            (pair, int(datetime.now().timestamp()))
         )
         rows = await cursor.fetchall()
         return [row[0] for row in rows] if rows else []
     finally:
         await db_pool.release(conn)
 
+
+# ==================== ИСПРАВЛЕНИЕ: Реализована функция ====================
 async def count_signals_today(pair: str) -> int:
-    """Подсчитать сколько сигналов отправлено сегодня для пары (для Системы 2)"""
-    # Для совместимости возвращаем 0
-    # В будущем можно добавить таблицу signals_log
-    return 0
+    """
+    Подсчитать сколько сигналов отправлено сегодня для пары
+    ИСПРАВЛЕНО: Теперь реально считает из таблицы signal_logs
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Начало сегодняшнего дня
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_ts = int(today_start.timestamp())
+        
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM signal_logs WHERE pair=? AND created_ts >= ?",
+            (pair, today_ts)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+    finally:
+        await db_pool.release(conn)
 
-async def log_signal(pair: str, side: str, entry_price: float, tp_levels: list, sl: float):
-    """Логировать отправленный сигнал (для Системы 2)"""
-    # Для совместимости ничего не делаем
-    # В будущем можно добавить таблицу signals_log
-    pass
 
+# ==================== ИСПРАВЛЕНИЕ: Реализована функция ====================
+async def log_signal(pair: str, side: str, entry_price: float, score: int = 0):
+    """
+    Логировать отправленный сигнал
+    ИСПРАВЛЕНО: Теперь реально сохраняет в БД
+    
+    Args:
+        pair: Торговая пара
+        side: LONG или SHORT
+        entry_price: Цена входа
+        score: Confidence score
+    """
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            """INSERT INTO signal_logs (pair, side, entry_price, score, created_ts)
+               VALUES (?, ?, ?, ?, ?)""",
+            (pair, side, entry_price, score, int(datetime.now().timestamp()))
+        )
+        await conn.commit()
+        logger.debug(f"Signal logged: {pair} {side} @ {entry_price}")
+    except Exception as e:
+        logger.error(f"Error logging signal: {e}")
+    finally:
+        await db_pool.release(conn)
