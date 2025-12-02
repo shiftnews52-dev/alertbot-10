@@ -12,7 +12,6 @@ from config import BOT_TOKEN
 from database import init_db, close_db
 from handlers import setup_handlers
 from crypto_payment import handle_crypto_webhook
-from payment_handlers import setup_payment_handlers
 # СИСТЕМА 2: Professional Analyzer
 from tasks import price_collector, signal_analyzer
 from pnl_tracker import pnl_tracker
@@ -75,11 +74,7 @@ async def on_startup(dp):
     
     # Регистрируем обработчики
     setup_handlers(dp)
-    logger.info("✅ Handlers registered")
-    
-    # Регистрируем платёжные обработчики
-    setup_payment_handlers(dp, bot)
-    logger.info("✅ Payment handlers registered")
+    logger.info("✅ Handlers registered (including payments)")
     
     # Запускаем HTTP сервер для вебхуков
     app = web.Application()
