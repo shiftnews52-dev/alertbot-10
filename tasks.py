@@ -1,5 +1,9 @@
 """
-tasks_FIXED.py - Исправленная версия с увеличенной загрузкой данных
+tasks.py - ИСПРАВЛЕННАЯ версия
+ИСПРАВЛЕНИЯ:
+1. Исправлен вызов get_pairs_with_users()
+2. Исправлен вызов log_signal()
+3. Улучшена обработка ошибок
 """
 import time
 import asyncio
@@ -15,7 +19,7 @@ from config import (
     SIGNAL_COOLDOWN
 )
 from database import (
-    get_all_tracked_pairs, get_pairs_with_users,
+    get_all_tracked_pairs, get_pairs_with_users, get_users_for_pair,
     count_signals_today, log_signal, get_all_user_ids
 )
 from indicators import CANDLES, fetch_price, fetch_candles_binance
@@ -35,28 +39,26 @@ async def send_message_safe(bot: Bot, user_id: int, text: str, **kwargs):
     except RetryAfter as e:
         await asyncio.sleep(e.timeout)
         return await send_message_safe(bot, user_id, text, **kwargs)
-    except TelegramAPIError:
+    except TelegramAPIError as e:
+        logger.debug(f"Telegram API error for user {user_id}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error sending to {user_id}: {e}")
         return False
 
 async def price_collector(bot: Bot):
     """
     Сбор рыночных данных для 1h, 4h, 1d таймфреймов
-    
-    ИСПРАВЛЕНИЕ: Увеличено количество загружаемых свечей:
-    - 1h: 300 свечей (было 100)
-    - 4h: 200 свечей (было 100)
-    - 1d: 100 свечей (было 100)
     """
     logger.info("🔄 CryptoMicky Price Collector started (1H, 4H, 1D)")
     
     # Загружаем исторические данные
     logger.info("📥 Loading historical data for all timeframes...")
     
-    # ИСПРАВЛЕНИЕ: Увеличены лимиты загрузки
     timeframes_config = {
-        '1h': 300,  # Было 100, стало 300
-        '4h': 200,  # Было 100, стало 200
-        '1d': 100   # Было 100, осталось 100
+        '1h': 300,
+        '4h': 200,
+        '1d': 100
     }
     
     for pair in DEFAULT_PAIRS:
@@ -112,8 +114,7 @@ async def price_collector(bot: Bot):
 async def signal_analyzer(bot: Bot):
     """
     Анализ и отправка сигналов с CryptoMicky алгоритмом
-    
-    ИСПРАВЛЕНИЕ: Добавлены детальные логи для отладки
+    ИСПРАВЛЕНО: Правильный вызов get_pairs_with_users и log_signal
     """
     logger.info("🎯 CryptoMicky Signal Analyzer started")
     
@@ -122,23 +123,30 @@ async def signal_analyzer(bot: Bot):
     
     while True:
         try:
+            # ИСПРАВЛЕНИЕ: Получаем данные правильно
             rows = await get_pairs_with_users()
             
+            # Группируем пользователей по парам
             pairs_users = defaultdict(list)
             for row in rows:
                 pairs_users[row["pair"]].append(row["user_id"])
+            
+            # Добавляем DEFAULT_PAIRS для анализа даже без пользователей
+            for pair in DEFAULT_PAIRS:
+                if pair not in pairs_users:
+                    pairs_users[pair] = []
             
             current_time = time.time()
             signals_found = 0
             
             for pair, users in pairs_users.items():
-                # Проверка лимита
+                # Проверка лимита сигналов за день
                 signals_today = await count_signals_today(pair)
                 if signals_today >= MAX_SIGNALS_PER_DAY:
                     logger.debug(f"⏭️  {pair}: Daily limit reached ({signals_today}/{MAX_SIGNALS_PER_DAY})")
                     continue
                 
-                # Cooldown
+                # Cooldown между сигналами
                 if pair in LAST_SIGNALS:
                     time_since_last = current_time - LAST_SIGNALS[pair]
                     if time_since_last < SIGNAL_COOLDOWN:
@@ -152,13 +160,14 @@ async def signal_analyzer(bot: Bot):
                 candles_1d = CANDLES.get_candles(pair, "1d")
                 btc_candles_1h = CANDLES.get_candles("BTCUSDT", "1h")
                 
-                # ИСПРАВЛЕНИЕ: Новые требования к данным
+                # Проверяем достаточность данных
                 if len(candles_1h) < 100 or len(candles_4h) < 100 or len(candles_1d) < 30:
                     logger.debug(f"⚠️  {pair}: Not enough candles (1h={len(candles_1h)}, 4h={len(candles_4h)}, 1d={len(candles_1d)})")
                     continue
                 
-                logger.debug(f"🔍 Analyzing {pair} (1h={len(candles_1h)}, 4h={len(candles_4h)}, 1d={len(candles_1d)} candles)...")
+                logger.debug(f"🔍 Analyzing {pair}...")
                 
+                # Анализируем
                 signal = crypto_micky_analyzer.analyze_pair(
                     pair, candles_1h, candles_4h, candles_1d, btc_candles_1h
                 )
@@ -196,13 +205,24 @@ async def signal_analyzer(bot: Bot):
                     text += f"📊 <b>Confidence:</b> {confidence_level}\n\n"
                     text += "⚠️ <i>Не финансовый совет</i>"
                     
-                    # Отправка
+                    # ИСПРАВЛЕНИЕ: Получаем пользователей для этой пары
+                    if not users:
+                        users = await get_users_for_pair(pair)
+                    
+                    # Если нет подписчиков на эту пару, отправляем всем платным
+                    if not users:
+                        from database import get_all_paid_users
+                        users = await get_all_paid_users()
+                    
+                    # Отправка пользователям
                     sent_count = 0
                     for user_id in users:
-                        if await send_message_safe(bot, user_id, text):
-                            await log_signal(user_id, pair, signal['side'], signal['price'], signal['confidence'])
+                        if await send_message_safe(bot, user_id, text, parse_mode="HTML"):
                             sent_count += 1
                         await asyncio.sleep(BATCH_SEND_DELAY)
+                    
+                    # ИСПРАВЛЕНИЕ: Правильный вызов log_signal
+                    await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
                     
                     LAST_SIGNALS[pair] = current_time
                     logger.info(f"✅ Signal sent: {pair} {signal['side']} to {sent_count} users")
