@@ -13,7 +13,8 @@ from database import init_db, close_db
 from handlers import setup_handlers
 from crypto_payment import handle_crypto_webhook
 from payment_handlers import setup_payment_handlers
-from scheduler import signal_scheduler
+# СИСТЕМА 2: Professional Analyzer
+from tasks import price_collector, signal_analyzer
 from pnl_tracker import pnl_tracker
 from pnl_tasks import track_signals_pnl
 
@@ -118,9 +119,14 @@ async def main():
         # Запуск polling
         await on_startup(dp)
         
-        # Запуск планировщика сигналов в фоне
-        asyncio.create_task(signal_scheduler(bot))
-        logger.info("✅ Signal scheduler started in background")
+        # ==================== СИСТЕМА 2: Professional Analyzer ====================
+        # Запуск сборщика цен (каждые 5 минут)
+        asyncio.create_task(price_collector(bot))
+        logger.info("✅ Price collector started (System 2)")
+        
+        # Запуск анализатора сигналов (каждые 5 минут)
+        asyncio.create_task(signal_analyzer(bot))
+        logger.info("✅ Signal analyzer started (System 2)")
         
         # Запуск PnL трекера в фоне
         asyncio.create_task(track_signals_pnl(bot))
