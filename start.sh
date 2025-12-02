@@ -2,7 +2,7 @@
 
 echo "🚀 =========================================="
 echo "🚀 Starting Alpha Entry Bot (System 2)"
-echo "🚀 Professional Analyzer + Multi-Timeframe"
+echo "🚀 Professional Analyzer + PnL Tracker"
 echo "🚀 =========================================="
 
 # Проверка переменных окружения
@@ -18,14 +18,46 @@ fi
 echo "✅ BOT_TOKEN: ****${BOT_TOKEN: -5}"
 echo "✅ ADMIN_IDS: $ADMIN_IDS"
 
-# ==================== МИГРАЦИЯ БАЗЫ ДАННЫХ ====================
+# ==================== ОЧИСТКА СТАРОЙ БД ====================
 echo ""
+echo "🧹 =========================================="
+echo "🧹 DATABASE CLEANUP"
+echo "🧹 =========================================="
+echo ""
+
+# Путь к БД
+DB_PATH="${DB_PATH:-/opt/render/project/src/bot.db}"
+echo "📍 DB Path: $DB_PATH"
+
+# Проверяем существует ли БД
+if [ -f "$DB_PATH" ]; then
+    echo "⚠️  Old database found!"
+    echo "🗑️  Removing old database to ensure clean schema..."
+    
+    # Удаляем старую БД и все связанные файлы
+    rm -f "$DB_PATH"
+    rm -f "${DB_PATH}-shm"
+    rm -f "${DB_PATH}-wal"
+    rm -f "${DB_PATH}-journal"
+    
+    if [ ! -f "$DB_PATH" ]; then
+        echo "✅ Old database removed successfully!"
+    else
+        echo "❌ Failed to remove old database"
+    fi
+else
+    echo "✅ No old database found - will create fresh one"
+fi
+
+echo ""
+
+# ==================== МИГРАЦИЯ БАЗЫ ДАННЫХ ====================
 echo "🔧 =========================================="
 echo "🔧 DATABASE MIGRATION"
 echo "🔧 =========================================="
 echo ""
 
-# Запускаем миграцию для добавления колонки status
+# Запускаем миграцию (на всякий случай)
 echo "⏳ Running database migration..."
 python migrate_db.py
 
@@ -33,12 +65,6 @@ if [ $? -eq 0 ]; then
     echo "✅ Migration completed successfully"
 else
     echo "⚠️  Migration warning (may be ok if table doesn't exist yet)"
-fi
-
-# Создание директории для данных (если нужна)
-if [ ! -d "/data" ]; then
-    mkdir -p ./data
-    echo "✅ Created local data directory"
 fi
 
 # ==================== ИМПОРТ ИСТОРИЧЕСКИХ ДАННЫХ ====================
