@@ -1,13 +1,11 @@
 """
-pnl_handlers.py - Обработчики команд для статистики PnL
-Добавь эти функции в handlers.py
+pnl_handlers.py - Обработчики команд для статистики PnL (ИСПРАВЛЕНО)
 """
-
 from aiogram import types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pnl_tracker import pnl_tracker
 from database import get_user_lang
-from config import t
+from config import DEFAULT_PAIRS
 
 # ==================== КОМАНДА /stats ====================
 async def cmd_stats(message: types.Message):
@@ -63,9 +61,12 @@ async def cmd_stats(message: types.Message):
         InlineKeyboardButton("90 дней", callback_data="stats_90")
     )
     kb.add(InlineKeyboardButton("📊 По парам", callback_data="stats_pairs"))
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
     
-    await message.answer(text, reply_markup=kb)
+    # Кнопка назад
+    back_text = "⬅️ Back" if lang == "en" else "⬅️ Назад"
+    kb.add(InlineKeyboardButton(back_text, callback_data="back_main"))
+    
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 # ==================== CALLBACK ОБРАБОТЧИКИ ====================
 async def stats_period_callback(call: types.CallbackQuery):
@@ -118,20 +119,20 @@ async def stats_period_callback(call: types.CallbackQuery):
         InlineKeyboardButton("90 дней", callback_data="stats_90")
     )
     kb.add(InlineKeyboardButton("📊 По парам", callback_data="stats_pairs"))
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="back_main"))
+    
+    back_text = "⬅️ Back" if lang == "en" else "⬅️ Назад"
+    kb.add(InlineKeyboardButton(back_text, callback_data="back_main"))
     
     try:
-        await call.message.edit_text(text, reply_markup=kb)
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except:
-        await call.message.answer(text, reply_markup=kb)
+        await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
     
     await call.answer()
 
 async def stats_pairs_callback(call: types.CallbackQuery):
     """Показать статистику по парам"""
     lang = await get_user_lang(call.from_user.id)
-    
-    from config import DEFAULT_PAIRS
     
     text = "📊 <b>СТАТИСТИКА ПО ПАРАМ (30 ДНЕЙ)</b>\n\n"
     
@@ -160,12 +161,13 @@ async def stats_pairs_callback(call: types.CallbackQuery):
     
     # Кнопки
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(t(lang, "btn_back"), callback_data="stats_30"))
+    back_text = "⬅️ Back" if lang == "en" else "⬅️ Назад"
+    kb.add(InlineKeyboardButton(back_text, callback_data="stats_30"))
     
     try:
-        await call.message.edit_text(text, reply_markup=kb)
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except:
-        await call.message.answer(text, reply_markup=kb)
+        await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
     
     await call.answer()
 
@@ -179,7 +181,7 @@ async def cmd_active(message: types.Message):
     if not active:
         text = "⏳ <b>Нет активных сигналов</b>\n\n"
         text += "Ожидай следующий качественный сигнал! 🎯"
-        await message.answer(text)
+        await message.answer(text, parse_mode="HTML")
         return
     
     text = f"⏳ <b>АКТИВНЫЕ СИГНАЛЫ ({len(active)})</b>\n\n"
@@ -209,26 +211,4 @@ async def cmd_active(message: types.Message):
         text += f"   {tp3_status} TP3: <code>{tp3:.8f}</code>\n"
         text += f"   🛡 SL: <code>{sl:.8f}</code>\n\n"
     
-    await message.answer(text)
-
-# ==================== ИНТЕГРАЦИЯ В setup_handlers ====================
-"""
-Добавь в функцию setup_handlers в handlers.py:
-
-    # PnL команды
-    @dp.message_handler(commands=["stats"])
-    async def handle_stats(message: types.Message):
-        await cmd_stats(message)
-    
-    @dp.message_handler(commands=["active"])
-    async def handle_active(message: types.Message):
-        await cmd_active(message)
-    
-    @dp.callback_query_handler(lambda c: c.data.startswith("stats_") and c.data.split("_")[1].isdigit())
-    async def handle_stats_period(call: types.CallbackQuery):
-        await stats_period_callback(call)
-    
-    @dp.callback_query_handler(lambda c: c.data == "stats_pairs")
-    async def handle_stats_pairs(call: types.CallbackQuery):
-        await stats_pairs_callback(call)
-"""
+    await message.answer(text, parse_mode="HTML")
