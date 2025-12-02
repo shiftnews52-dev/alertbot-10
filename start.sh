@@ -1,76 +1,66 @@
 #!/bin/bash
-# Alpha Entry Bot - Start script (1H ONLY)
-# Автоматический импорт исторических данных
 
-set -e
+echo "🚀 =========================================="
+echo "🚀 Starting Alpha Entry Bot (System 2)"
+echo "🚀 Professional Analyzer + Multi-Timeframe"
+echo "🚀 =========================================="
 
-echo "============================================================"
-echo "🚀 Alpha Entry Bot - Starting (1H Timeframe)"
-echo "============================================================"
-echo ""
-
-# ==================== ПРОВЕРКИ ====================
-echo "🔍 Pre-flight checks..."
-echo ""
-
-# Python версия
-echo "🐍 Python version:"
-python --version
-echo ""
-
-# Переменные окружения
+# Проверка переменных окружения
 if [ -z "$BOT_TOKEN" ]; then
-    echo "❌ ERROR: BOT_TOKEN not set!"
-    echo "   Set it in environment or .env file"
+    echo "❌ Error: BOT_TOKEN not set!"
     exit 1
 fi
 
 if [ -z "$ADMIN_IDS" ]; then
-    echo "❌ ERROR: ADMIN_IDS not set!"
-    echo "   Set it in environment or .env file"
-    exit 1
+    echo "⚠️  Warning: ADMIN_IDS not set"
 fi
 
-echo "✅ BOT_TOKEN: Set"
-echo "✅ ADMIN_IDS: Set"
-echo "✅ TIMEFRAME: 1h (fixed)"
+echo "✅ BOT_TOKEN: ****${BOT_TOKEN: -5}"
+echo "✅ ADMIN_IDS: $ADMIN_IDS"
+
+# Создание директории для данных (если нужна)
+if [ ! -d "/data" ]; then
+    mkdir -p ./data
+    echo "✅ Created local data directory"
+fi
+
+# ==================== ИМПОРТ ИСТОРИЧЕСКИХ ДАННЫХ ====================
+echo ""
+echo "📊 =========================================="
+echo "📊 IMPORTING HISTORICAL DATA"
+echo "📊 =========================================="
 echo ""
 
-# ==================== ИМПОРТ ИСТОРИИ ====================
-echo "============================================================"
-echo "📥 Importing historical data (1h timeframe)"
-echo "============================================================"
+# Импорт данных для всех пар
+echo "⏳ Importing candles for 15 pairs..."
+echo "   This will take ~2-3 minutes..."
 echo ""
 
-if [ -f "import_history.py" ]; then
-    echo "📊 Importing 300 hourly candles for default pairs..."
-    
-    if python import_history.py all 300; then
-        echo ""
-        echo "✅ Historical data imported successfully!"
-    else
-        echo ""
-        echo "⚠️  Warning: Import failed, but continuing..."
-        echo "   Bot will work but needs time to collect data (~4 hours)"
-    fi
+python import_history.py all
+
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "✅ Historical data imported successfully!"
 else
-    echo "⚠️  Warning: import_history.py not found"
-    echo "   Bot will start but needs time to collect data"
+    echo ""
+    echo "⚠️  Warning: Import failed, bot will collect data gradually"
 fi
-
-echo ""
 
 # ==================== ЗАПУСК БОТА ====================
-echo "============================================================"
-echo "🤖 Starting main bot..."
-echo "============================================================"
+echo ""
+echo "🤖 =========================================="
+echo "🤖 STARTING BOT"
+echo "🤖 =========================================="
 echo ""
 
-# Экспорт переменных
-export BOT_TOKEN
-export ADMIN_IDS
-export SUPPORT_URL=${SUPPORT_URL:-https://t.me/support}
-export BOT_NAME=${BOT_NAME:-Alpha Entry Bot}
-
-# Запуск
 python main.py
+
+# Если бот упал, показать ошибку
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ =========================================="
+    echo "❌ BOT CRASHED!"
+    echo "❌ Check logs above for errors"
+    echo "❌ =========================================="
+    exit 1
+fi
