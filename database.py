@@ -4,11 +4,10 @@ database.py - База данных с поддержкой платных по�
 import aiosqlite
 import logging
 from datetime import datetime
-import os
+
+from config import DB_PATH
 
 logger = logging.getLogger(__name__)
-
-DB_PATH = os.getenv("DB_PATH", "/data/bot.db" if os.path.exists("/data") else "bot.db")
 
 # SQL схема
 INIT_SQL = """
