@@ -107,3 +107,48 @@ if [ $? -ne 0 ]; then
     echo "❌ =========================================="
     exit 1
 fi
+```
+
+#### **5. Внизу нажми "Commit changes"**
+
+#### **6. Commit message:**
+```
+🗑️ Add auto DB cleanup on startup
+```
+
+#### **7. Нажми "Commit changes"**
+
+---
+
+## ✅ **ПОСЛЕ COMMIT:**
+
+**Render автоматически:**
+1. Обнаружит изменения (30 сек)
+2. Запустит новый build (1 мин)
+3. **Удалит старую БД** 🗑️ ← ВАЖНО!
+4. Создаст новую БД с правильной схемой
+5. Запустит бота ✅
+
+**Общее время: ~5 минут**
+
+---
+
+## 📊 **ОЖИДАЕМЫЕ ЛОГИ:**
+```
+🧹 DATABASE CLEANUP          ← НОВОЕ!
+📍 DB Path: /opt/render/project/src/bot.db
+⚠️  Old database found!
+🗑️  Removing old database to ensure clean schema...
+✅ Old database removed successfully!  ← БД УДАЛЕНА!
+
+🔧 DATABASE MIGRATION
+✅ Migration completed successfully
+
+📊 IMPORTING HISTORICAL DATA
+✅ Historical data imported successfully!
+
+🤖 STARTING BOT
+✅ Database initialized
+✅ PnL tracker initialized  ← БЕЗ ОШИБКИ!
+✅ Bot started successfully!
+Start polling.  ← РАБОТАЕТ!
