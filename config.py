@@ -1,5 +1,6 @@
 """
 config.py - Конфигурация для Системы 2 (Professional Analyzer)
+ИСПРАВЛЕНО: Добавлены недостающие константы
 """
 import os
 
@@ -14,7 +15,7 @@ if _admin_ids_env:
     ADMIN_IDS = [int(x.strip()) for x in _admin_ids_env.split(",") if x.strip().isdigit()]
 else:
     ADMIN_IDS = [
-        7954736516,390436725,681419763,  # ← Замени на свой ID (узнай через @userinfobot)
+        7954736516, 390436725, 681419763,  # ← Замени на свой ID (узнай через @userinfobot)
     ]
 
 # DB_PATH - единый для всех модулей
@@ -66,6 +67,11 @@ MACD_SIGNAL = 9
 BB_PERIOD = 20
 BB_STD = 2
 
+# ==================== ИСПРАВЛЕНИЕ: Недостающие константы ====================
+MIN_CONFIDENCE = 70        # Минимальный confidence для сигнала (используется в indicators.py)
+ENTRY_ZONE_PERCENT = 1.0   # Зона входа ±1% (используется в indicators.py)
+STOP_PERCENT = 2.0         # Стоп-лосс 2% от уровня (используется в indicators.py)
+
 # ==================== FILTERS (УЛУЧШЕННЫЕ) ====================
 MIN_SIGNAL_SCORE = 70      # Минимальный score для сигнала
 MAX_SIGNALS_PER_DAY = 5    # Максимум сигналов в день на пару
@@ -89,10 +95,10 @@ IMG_PAYWALL = os.getenv("IMG_PAYWALL", "")
 IMG_GUIDE = os.getenv("IMG_GUIDE", "")
 
 # ==================== TAKE PROFIT / STOP LOSS ====================
-TP1_PERCENT = 1.5  # TP1: 1.5%
-TP2_PERCENT = 3.0  # TP2: 3%
-TP3_PERCENT = 5.0  # TP3: 5%
-SL_PERCENT = 2.0   # SL: 2%
+TP1_PERCENT = 2.0  # TP1: 2% (R/R 2:1)
+TP2_PERCENT = 4.0  # TP2: 4% (R/R 4:1)
+TP3_PERCENT = 6.0  # TP3: 6% (R/R 6:1)
+SL_PERCENT = 1.0   # SL: 1% (базовый)
 
 # ==================== VALIDATION ====================
 if not BOT_TOKEN:
@@ -113,4 +119,5 @@ print(f"   - Timeframe: {TIMEFRAME} (fixed)")
 print(f"   - Check Interval: {CHECK_INTERVAL}s")
 print(f"   - Max Signals/Day: {MAX_SIGNALS_PER_DAY}")
 print(f"   - Signal Cooldown: {SIGNAL_COOLDOWN}s ({SIGNAL_COOLDOWN/3600:.1f}h)")
+print(f"   - Min Confidence: {MIN_CONFIDENCE}")
 print(f"   - Crypto Bot: {'Enabled' if CRYPTO_BOT_TOKEN else 'Disabled'}")
