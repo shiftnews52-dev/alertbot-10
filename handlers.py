@@ -317,6 +317,44 @@ async def handle_callbacks(call: types.CallbackQuery):
         await call.answer()
         return
     
+    # Управление монетами
+    if data == "manage_coins":
+        await show_manage_coins(call.message, lang)
+        await call.answer()
+        return
+    
+    # Включить монету
+    if data.startswith("coin_on_"):
+        pair = data.replace("coin_on_", "")
+        await add_user_pair(user_id, pair)
+        await show_manage_coins(call.message, lang)
+        await call.answer(f"✅ {pair} включён!" if lang == "ru" else f"✅ {pair} enabled!")
+        return
+    
+    # Выключить монету
+    if data.startswith("coin_off_"):
+        pair = data.replace("coin_off_", "")
+        await remove_user_pair(user_id, pair)
+        await show_manage_coins(call.message, lang)
+        await call.answer(f"❌ {pair} выключен!" if lang == "ru" else f"❌ {pair} disabled!")
+        return
+    
+    # Включить все монеты
+    if data == "coins_all_on":
+        for pair in DEFAULT_PAIRS:
+            await add_user_pair(user_id, pair)
+        await show_manage_coins(call.message, lang)
+        await call.answer("✅ Все монеты включены!" if lang == "ru" else "✅ All coins enabled!", show_alert=True)
+        return
+    
+    # Выключить все монеты
+    if data == "coins_all_off":
+        for pair in DEFAULT_PAIRS:
+            await remove_user_pair(user_id, pair)
+        await show_manage_coins(call.message, lang)
+        await call.answer("❌ Все монеты выключены!" if lang == "ru" else "❌ All coins disabled!", show_alert=True)
+        return
+    
     await call.answer()
 
 # ==================== МЕНЮ РАЗДЕЛОВ ====================
@@ -340,6 +378,7 @@ async def show_alerts_menu(message: types.Message, lang: str):
         text += "\n💡 Сигналы отправляются автоматически при выполнении условий"
     
     kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("⚙️ Настроить монеты" if lang == "ru" else "⚙️ Manage Coins", callback_data="manage_coins"))
     kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
     
     # С картинкой если есть
@@ -352,6 +391,56 @@ async def show_alerts_menu(message: types.Message, lang: str):
             return
         except:
             pass
+    
+    try:
+        await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+async def show_manage_coins(message: types.Message, lang: str):
+    """Управление монетами"""
+    user_id = message.from_user.id
+    user_pairs = await get_user_pairs(user_id)
+    
+    if lang == "en":
+        text = "⚙️ <b>MANAGE COINS</b>\n\n"
+        text += "Select coins to track. You'll receive signals only for enabled coins.\n\n"
+        text += f"✅ Enabled: <b>{len(user_pairs)}</b> coins\n"
+        text += f"📊 Available: <b>{len(DEFAULT_PAIRS)}</b> coins"
+    else:
+        text = "⚙️ <b>НАСТРОЙКА МОНЕТ</b>\n\n"
+        text += "Выбери монеты для отслеживания. Сигналы будут приходить только по включённым монетам.\n\n"
+        text += f"✅ Включено: <b>{len(user_pairs)}</b> монет\n"
+        text += f"📊 Доступно: <b>{len(DEFAULT_PAIRS)}</b> монет"
+    
+    # Кнопки с монетами (3 в ряд)
+    kb = InlineKeyboardMarkup(row_width=3)
+    
+    buttons = []
+    for pair in DEFAULT_PAIRS:
+        # Галочка если монета включена
+        if pair in user_pairs:
+            emoji = "✅"
+            callback = f"coin_off_{pair}"
+        else:
+            emoji = "❌"
+            callback = f"coin_on_{pair}"
+        
+        buttons.append(InlineKeyboardButton(
+            f"{emoji} {pair.replace('USDT', '')}",
+            callback_data=callback
+        ))
+    
+    # Добавляем по 3 кнопки в ряд
+    for i in range(0, len(buttons), 3):
+        kb.row(*buttons[i:i+3])
+    
+    # Кнопки управления
+    kb.row(
+        InlineKeyboardButton("✅ Включить все" if lang == "ru" else "✅ Enable All", callback_data="coins_all_on"),
+        InlineKeyboardButton("❌ Выключить все" if lang == "ru" else "❌ Disable All", callback_data="coins_all_off")
+    )
+    kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="menu_alerts"))
     
     try:
         await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
