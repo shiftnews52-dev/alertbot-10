@@ -18,6 +18,23 @@ fi
 echo "✅ BOT_TOKEN: ****${BOT_TOKEN: -5}"
 echo "✅ ADMIN_IDS: $ADMIN_IDS"
 
+# ==================== МИГРАЦИЯ БАЗЫ ДАННЫХ ====================
+echo ""
+echo "🔧 =========================================="
+echo "🔧 DATABASE MIGRATION"
+echo "🔧 =========================================="
+echo ""
+
+# Запускаем миграцию для добавления колонки status
+echo "⏳ Running database migration..."
+python migrate_db.py
+
+if [ $? -eq 0 ]; then
+    echo "✅ Migration completed successfully"
+else
+    echo "⚠️  Migration warning (may be ok if table doesn't exist yet)"
+fi
+
 # Создание директории для данных (если нужна)
 if [ ! -d "/data" ]; then
     mkdir -p ./data
