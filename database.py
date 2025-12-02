@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS active_signals (
     tp2_hit INTEGER DEFAULT 0,
     tp3_hit INTEGER DEFAULT 0,
     sl_hit INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active',
     created_ts INTEGER NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -410,3 +411,4 @@ async def log_signal(pair: str, side: str, entry_price: float, tp_levels: list, 
     # Для совместимости ничего не делаем
     # В будущем можно добавить таблицу signals_log
     pass
+
