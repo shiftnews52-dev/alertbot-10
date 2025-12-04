@@ -502,3 +502,19 @@ async def log_signal(pair: str, side: str, entry_price: float, score: int = 0):
         logger.error(f"Error logging signal: {e}")
     finally:
         await db_pool.release(conn)
+
+
+async def get_all_users() -> list:
+    """
+    Получить список всех user_id для рассылки
+    
+    Returns:
+        [user_id, user_id, ...]
+    """
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT id FROM users")
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows] if rows else []
+    finally:
+        await db_pool.release(conn)
