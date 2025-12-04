@@ -216,13 +216,21 @@ async def is_paid(user_id: int) -> bool:
     finally:
         await db_pool.release(conn)
 
-async def grant_access(user_id: int):
-    """Выдать доступ пользователю"""
+async def grant_access(user_id: int, days: int = 30):
+    """Выдать доступ пользователю на N дней"""
+    from datetime import datetime, timedelta
+    
     conn = await db_pool.acquire()
     try:
-        await conn.execute("UPDATE users SET paid=1 WHERE id=?", (user_id,))
+        # Вычисляем дату окончания подписки
+        expiry_ts = int((datetime.now() + timedelta(days=days)).timestamp())
+        
+        await conn.execute(
+            "UPDATE users SET paid=1, subscription_expiry=? WHERE id=?", 
+            (expiry_ts, user_id)
+        )
         await conn.commit()
-        logger.info(f"Access granted to user {user_id}")
+        logger.info(f"Access granted to user {user_id} for {days} days (until {datetime.fromtimestamp(expiry_ts)})")
     finally:
         await db_pool.release(conn)
 
