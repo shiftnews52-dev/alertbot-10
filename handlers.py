@@ -35,6 +35,18 @@ PROMO_CODES = {
         "days": 9999,
         "uses": 999,
         "description": "Abram's personal promo code"
+    },
+    "abramdanke123": {
+        "type": "full_access",
+        "days": 9999,
+        "uses": 999,
+        "description": "Abram's personal promo code (lowercase)"
+    },
+    "ABRAMDANKE123": {
+        "type": "full_access",
+        "days": 9999,
+        "uses": 999,
+        "description": "Abram's personal promo code (uppercase)"
     }
 }
 
@@ -196,30 +208,42 @@ async def show_main_menu(message: types.Message, lang: str, paid: bool, is_start
 async def handle_promo_code(message: types.Message) -> bool:
     """Обработка промокода"""
     user_id = message.from_user.id
+    
+    # Если пользователя нет в базе - создаём
+    if not await user_exists(user_id):
+        await add_user(user_id, "ru")
+    
     lang = await get_user_lang(user_id)
     code = message.text.strip()
     
-    if code in PROMO_CODES:
-        promo = PROMO_CODES[code]
+    # Проверяем промокод (без учёта регистра)
+    promo = None
+    promo_key = None
+    
+    for key, value in PROMO_CODES.items():
+        if code.lower() == key.lower():
+            promo = value
+            promo_key = key
+            break
+    
+    if promo and promo["uses"] > 0:
+        await grant_access(user_id, promo["days"])
+        PROMO_CODES[promo_key]["uses"] -= 1
         
-        if promo["uses"] > 0:
-            await grant_access(user_id, promo["days"])
-            PROMO_CODES[code]["uses"] -= 1
-            
-            if lang == "en":
-                text = "🎉 <b>PROMO CODE ACTIVATED!</b>\n\n"
-                text += f"✅ You now have premium access!\n"
-                text += f"📅 Duration: {promo['days']} days\n\n"
-                text += "Enjoy quality trading signals! 🚀"
-            else:
-                text = "🎉 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
-                text += f"✅ Теперь у тебя премиум доступ!\n"
-                text += f"📅 Длительность: {promo['days']} дней\n\n"
-                text += "Наслаждайся качественными сигналами! 🚀"
-            
-            await message.answer(text, parse_mode="HTML")
-            await show_main_menu(message, lang, True, is_start=True)
-            return True
+        if lang == "en":
+            text = "🎉 <b>PROMO CODE ACTIVATED!</b>\n\n"
+            text += f"✅ You now have premium access!\n"
+            text += f"📅 Duration: {promo['days']} days\n\n"
+            text += "Enjoy quality trading signals! 🚀"
+        else:
+            text = "🎉 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
+            text += f"✅ Теперь у тебя премиум доступ!\n"
+            text += f"📅 Длительность: {promo['days']} дней\n\n"
+            text += "Наслаждайся качественными сигналами! 🚀"
+        
+        await message.answer(text, parse_mode="HTML")
+        await show_main_menu(message, lang, True, is_start=True)
+        return True
     
     return False
 
