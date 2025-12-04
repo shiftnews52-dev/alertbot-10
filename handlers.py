@@ -1,14 +1,17 @@
 """
-handlers.py - ПРОСТАЯ ВЕРСИЯ
-- При переходе удаляется старое сообщение, открывается новое
+handlers.py - ПОЛНАЯ ВЕРСИЯ
+- Картинки (IMG_START, IMG_ALERTS, IMG_REF, IMG_GUIDE)
+- Промокод AbramDanke123
+- Выбор языка
+- Удаление сообщений при переходе
 - Убрана статистика
-- Простой дизайн
+- Админ панель
 """
 import logging
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, Bot, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import ADMIN_IDS, DEFAULT_PAIRS
+from config import ADMIN_IDS, DEFAULT_PAIRS, IMG_START, IMG_ALERTS, IMG_REF, IMG_PAYWALL, IMG_GUIDE
 from database import (
     add_user, user_exists, get_user_lang, set_user_lang,
     is_paid, grant_access, revoke_access, get_user_pairs,
@@ -31,23 +34,33 @@ PROMO_CODES = {
         "type": "full_access",
         "days": 9999,
         "uses": 999,
+        "description": "Abram's personal promo code"
     }
 }
 
+# Состояние для рассылки
+broadcast_state = {}
+
+
 # ==================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ====================
-async def delete_and_send(message: types.Message, text: str, kb: InlineKeyboardMarkup):
+async def delete_and_send(message: types.Message, text: str, kb: InlineKeyboardMarkup, photo: str = None):
     """Удалить старое сообщение и отправить новое"""
+    chat_id = message.chat.id
+    
     try:
         await message.delete()
     except:
         pass
     
-    # Получаем chat_id из сообщения
-    chat_id = message.chat.id
-    
-    # Отправляем новое сообщение
-    from aiogram import Bot
     bot = Bot.get_current()
+    
+    if photo:
+        try:
+            await bot.send_photo(chat_id, photo, caption=text, reply_markup=kb, parse_mode="HTML")
+            return
+        except:
+            pass
+    
     await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -56,8 +69,11 @@ async def cmd_start(message: types.Message):
     """Команда /start"""
     user_id = message.from_user.id
     
+    # Новый пользователь - показываем выбор языка
     if not await user_exists(user_id):
         await add_user(user_id, "ru")
+        await show_language_selection(message)
+        return
     
     lang = await get_user_lang(user_id)
     paid = await is_paid(user_id)
@@ -65,63 +81,119 @@ async def cmd_start(message: types.Message):
     await show_main_menu(message, lang, paid, is_start=True)
 
 
+async def show_language_selection(message: types.Message):
+    """Выбор языка"""
+    text = "🌍 <b>Choose your language / Выбери язык</b>\n\n"
+    text += "Select your preferred language for the bot interface."
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
+    )
+    
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
 async def show_main_menu(message: types.Message, lang: str, paid: bool, is_start: bool = False):
     """Главное меню"""
     
-    if paid:
-        if lang == "en":
+    if lang == "en":
+        if paid:
             text = "🎯 <b>Alpha Entry Bot</b>\n\n"
-            text += "✅ <b>PREMIUM ACCESS</b>\n\n"
-            text += "You receive quality trading signals"
+            text += "You have <b>PREMIUM ACCESS</b> ✅\n\n"
+            text += "🔔 You'll receive 3-5 quality signals daily\n"
+            text += "📊 Multi-strategy analysis\n"
+            text += "🎯 Automatic TP/SL levels\n\n"
+            text += "Choose an action:"
         else:
             text = "🎯 <b>Alpha Entry Bot</b>\n\n"
-            text += "✅ <b>ПРЕМИУМ ДОСТУП</b>\n\n"
-            text += "Ты получаешь качественные торговые сигналы"
+            text += "Professional crypto trading signals with 70%+ winrate\n\n"
+            text += "🎯 <b>Features:</b>\n"
+            text += "• 3-5 quality signals per day\n"
+            text += "• Multi-strategy analysis\n"
+            text += "• Automatic TP/SL levels\n"
+            text += "• Up to 10 coins\n"
+            text += "• 24/7 monitoring\n\n"
+            text += "💡 <b>Have a promo code?</b> Just send it!\n\n"
+            text += "Get premium access to start earning! 💰"
     else:
-        if lang == "en":
+        if paid:
             text = "🎯 <b>Alpha Entry Bot</b>\n\n"
-            text += "Professional crypto signals\n\n"
-            text += "💡 Have a promo code? Just send it!"
+            text += "У тебя <b>ПРЕМИУМ ДОСТУП</b> ✅\n\n"
+            text += "🔔 Получай 3-5 качественных сигналов ежедневно\n"
+            text += "📊 Мультистратегия анализа\n"
+            text += "🎯 Автоматические уровни TP/SL\n\n"
+            text += "Выбери действие:"
         else:
             text = "🎯 <b>Alpha Entry Bot</b>\n\n"
-            text += "Профессиональные крипто сигналы\n\n"
-            text += "💡 Есть промокод? Просто отправь его!"
+            text += "Профессиональные крипто сигналы с винрейтом 70%+\n\n"
+            text += "🎯 <b>Возможности:</b>\n"
+            text += "• 3-5 качественных сигналов в день\n"
+            text += "• Мультистратегия анализа\n"
+            text += "• Автоматические уровни TP/SL\n"
+            text += "• До 10 монет\n"
+            text += "• Мониторинг 24/7\n\n"
+            text += "💡 <b>Есть промокод?</b> Просто отправь его!\n\n"
+            text += "Получи премиум доступ и начни зарабатывать! 💰"
     
     kb = InlineKeyboardMarkup(row_width=2)
     
     if paid:
         if lang == "en":
-            kb.add(InlineKeyboardButton("📈 My Coins", callback_data="menu_coins"))
-            kb.add(InlineKeyboardButton("📚 Guide", callback_data="menu_guide"))
-            kb.add(InlineKeyboardButton("👥 Referral", callback_data="menu_ref"))
-            kb.add(InlineKeyboardButton("💬 Support", callback_data="menu_support"))
+            kb.add(
+                InlineKeyboardButton("📈 My Coins", callback_data="menu_coins"),
+                InlineKeyboardButton("📚 Guide", callback_data="menu_guide")
+            )
+            kb.add(
+                InlineKeyboardButton("👥 Referral", callback_data="menu_ref"),
+                InlineKeyboardButton("💬 Support", callback_data="menu_support")
+            )
         else:
-            kb.add(InlineKeyboardButton("📈 Мои монеты", callback_data="menu_coins"))
-            kb.add(InlineKeyboardButton("📚 Инструкция", callback_data="menu_guide"))
-            kb.add(InlineKeyboardButton("👥 Рефералка", callback_data="menu_ref"))
-            kb.add(InlineKeyboardButton("💬 Поддержка", callback_data="menu_support"))
+            kb.add(
+                InlineKeyboardButton("📈 Мои монеты", callback_data="menu_coins"),
+                InlineKeyboardButton("📚 Инструкция", callback_data="menu_guide")
+            )
+            kb.add(
+                InlineKeyboardButton("👥 Рефералка", callback_data="menu_ref"),
+                InlineKeyboardButton("💬 Поддержка", callback_data="menu_support")
+            )
     else:
         if lang == "en":
-            kb.add(InlineKeyboardButton("🔓 Get Access", callback_data="menu_pay"))
-            kb.add(InlineKeyboardButton("📚 Guide", callback_data="menu_guide"))
-            kb.add(InlineKeyboardButton("👥 Referral", callback_data="menu_ref"))
-            kb.add(InlineKeyboardButton("💬 Support", callback_data="menu_support"))
+            kb.add(
+                InlineKeyboardButton("🔓 Get Access", callback_data="menu_pay"),
+                InlineKeyboardButton("📚 Guide", callback_data="menu_guide")
+            )
+            kb.add(
+                InlineKeyboardButton("👥 Referral", callback_data="menu_ref"),
+                InlineKeyboardButton("💬 Support", callback_data="menu_support")
+            )
         else:
-            kb.add(InlineKeyboardButton("🔓 Получить доступ", callback_data="menu_pay"))
-            kb.add(InlineKeyboardButton("📚 Инструкция", callback_data="menu_guide"))
-            kb.add(InlineKeyboardButton("👥 Рефералка", callback_data="menu_ref"))
-            kb.add(InlineKeyboardButton("💬 Поддержка", callback_data="menu_support"))
+            kb.add(
+                InlineKeyboardButton("🔓 Получить доступ", callback_data="menu_pay"),
+                InlineKeyboardButton("📚 Инструкция", callback_data="menu_guide")
+            )
+            kb.add(
+                InlineKeyboardButton("👥 Рефералка", callback_data="menu_ref"),
+                InlineKeyboardButton("💬 Поддержка", callback_data="menu_support")
+            )
     
     if is_start:
-        # Первый запуск - просто отправляем
+        # Первый запуск - отправляем новое сообщение
+        if IMG_START:
+            try:
+                await message.answer_photo(IMG_START, caption=text, reply_markup=kb, parse_mode="HTML")
+                return
+            except:
+                pass
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
         # Переход из другого меню - удаляем старое
-        await delete_and_send(message, text, kb)
+        await delete_and_send(message, text, kb, IMG_START)
 
 
 # ==================== ПРОМОКОДЫ ====================
-async def handle_promo_code(message: types.Message):
+async def handle_promo_code(message: types.Message) -> bool:
     """Обработка промокода"""
     user_id = message.from_user.id
     lang = await get_user_lang(user_id)
@@ -135,11 +207,15 @@ async def handle_promo_code(message: types.Message):
             PROMO_CODES[code]["uses"] -= 1
             
             if lang == "en":
-                text = "✅ <b>Promo code activated!</b>\n\n"
-                text += "You now have premium access"
+                text = "🎉 <b>PROMO CODE ACTIVATED!</b>\n\n"
+                text += f"✅ You now have premium access!\n"
+                text += f"📅 Duration: {promo['days']} days\n\n"
+                text += "Enjoy quality trading signals! 🚀"
             else:
-                text = "✅ <b>Промокод активирован!</b>\n\n"
-                text += "Теперь у тебя премиум доступ"
+                text = "🎉 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
+                text += f"✅ Теперь у тебя премиум доступ!\n"
+                text += f"📅 Длительность: {promo['days']} дней\n\n"
+                text += "Наслаждайся качественными сигналами! 🚀"
             
             await message.answer(text, parse_mode="HTML")
             await show_main_menu(message, lang, True, is_start=True)
@@ -158,65 +234,80 @@ async def handle_callbacks(call: types.CallbackQuery):
     
     await call.answer()
     
-    # Главное меню
+    # ===== ВЫБОР ЯЗЫКА =====
+    if data.startswith("lang_"):
+        new_lang = data.split("_")[1]
+        await set_user_lang(user_id, new_lang)
+        
+        if new_lang == "en":
+            await call.answer("✅ Language changed to English", show_alert=True)
+        else:
+            await call.answer("✅ Язык изменён на русский", show_alert=True)
+        
+        try:
+            await call.message.delete()
+        except:
+            pass
+        
+        await show_main_menu(call.message, new_lang, paid, is_start=True)
+        return
+    
+    # ===== ГЛАВНОЕ МЕНЮ =====
     if data == "back_main":
         await show_main_menu(call.message, lang, paid)
         return
     
-    # Мои монеты
+    # ===== МОИ МОНЕТЫ =====
     if data == "menu_coins":
         await show_coins_menu(call.message, lang)
         return
     
-    # Инструкция
+    # ===== ИНСТРУКЦИЯ =====
     if data == "menu_guide":
         await show_guide(call.message, lang)
         return
     
-    # Поддержка
-    if data == "menu_support":
-        await show_support(call.message, lang)
-        return
-    
-    # Рефералка
+    # ===== РЕФЕРАЛКА =====
     if data == "menu_ref":
         await show_referral(call.message, lang, user_id)
         return
     
-    # Оплата
+    # ===== ПОДДЕРЖКА =====
+    if data == "menu_support":
+        await show_support(call.message, lang)
+        return
+    
+    # ===== ОПЛАТА =====
     if data == "menu_pay":
         await show_payment_menu(call.message, lang)
         return
     
-    # Включить монету
+    # ===== МОНЕТЫ ВКЛ/ВЫКЛ =====
     if data.startswith("coin_on_"):
         pair = data.replace("coin_on_", "")
         await add_user_pair(user_id, pair)
         await show_coins_menu(call.message, lang)
         return
     
-    # Выключить монету
     if data.startswith("coin_off_"):
         pair = data.replace("coin_off_", "")
         await remove_user_pair(user_id, pair)
         await show_coins_menu(call.message, lang)
         return
     
-    # Включить все
     if data == "coins_all_on":
         for pair in DEFAULT_PAIRS:
             await add_user_pair(user_id, pair)
         await show_coins_menu(call.message, lang)
         return
     
-    # Выключить все
     if data == "coins_all_off":
         for pair in DEFAULT_PAIRS:
             await remove_user_pair(user_id, pair)
         await show_coins_menu(call.message, lang)
         return
     
-    # Платежи
+    # ===== ПЛАТЕЖИ =====
     if data.startswith("plan_"):
         await handle_plan_selection(call)
         return
@@ -225,7 +316,7 @@ async def handle_callbacks(call: types.CallbackQuery):
         await handle_payment_check(call)
         return
     
-    # ===== АДМИН CALLBACKS =====
+    # ===== АДМИН =====
     if data == "admin_refresh":
         if user_id in ADMIN_IDS:
             await show_admin_panel(call.message, is_callback=True)
@@ -277,7 +368,7 @@ async def handle_callbacks(call: types.CallbackQuery):
         return
 
 
-# ==================== МЕНЮ МОНЕТ ====================
+# ==================== МОИ МОНЕТЫ ====================
 async def show_coins_menu(message: types.Message, lang: str):
     """Меню управления монетами"""
     user_id = message.chat.id
@@ -286,7 +377,7 @@ async def show_coins_menu(message: types.Message, lang: str):
     if lang == "en":
         text = "📈 <b>MY COINS</b>\n\n"
         if user_pairs:
-            text += f"Active: {len(user_pairs)}/{len(DEFAULT_PAIRS)}\n"
+            text += f"✅ Active: {len(user_pairs)}/{len(DEFAULT_PAIRS)}\n"
             coins = ", ".join([p.replace("USDT", "") for p in user_pairs])
             text += f"<code>{coins}</code>\n\n"
         else:
@@ -295,7 +386,7 @@ async def show_coins_menu(message: types.Message, lang: str):
     else:
         text = "📈 <b>МОИ МОНЕТЫ</b>\n\n"
         if user_pairs:
-            text += f"Активных: {len(user_pairs)}/{len(DEFAULT_PAIRS)}\n"
+            text += f"✅ Активных: {len(user_pairs)}/{len(DEFAULT_PAIRS)}\n"
             coins = ", ".join([p.replace("USDT", "") for p in user_pairs])
             text += f"<code>{coins}</code>\n\n"
         else:
@@ -304,7 +395,6 @@ async def show_coins_menu(message: types.Message, lang: str):
     
     kb = InlineKeyboardMarkup(row_width=3)
     
-    # Кнопки монет
     buttons = []
     for pair in DEFAULT_PAIRS:
         name = pair.replace("USDT", "")
@@ -313,11 +403,9 @@ async def show_coins_menu(message: types.Message, lang: str):
         else:
             buttons.append(InlineKeyboardButton(f"⬜ {name}", callback_data=f"coin_on_{pair}"))
     
-    # По 3 в ряд
     for i in range(0, len(buttons), 3):
         kb.row(*buttons[i:i+3])
     
-    # Кнопки управления
     if lang == "en":
         kb.row(
             InlineKeyboardButton("✅ All ON", callback_data="coins_all_on"),
@@ -331,7 +419,7 @@ async def show_coins_menu(message: types.Message, lang: str):
         )
         kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
     
-    await delete_and_send(message, text, kb)
+    await delete_and_send(message, text, kb, IMG_ALERTS)
 
 
 # ==================== ИНСТРУКЦИЯ ====================
@@ -339,31 +427,61 @@ async def show_guide(message: types.Message, lang: str):
     """Инструкция"""
     if lang == "en":
         text = "📚 <b>HOW TO USE</b>\n\n"
-        text += "1️⃣ Select coins to track\n"
-        text += "2️⃣ Wait for signals\n"
-        text += "3️⃣ Open position at entry price\n"
-        text += "4️⃣ Set TP and SL levels\n\n"
-        text += "<b>Take Profit:</b>\n"
-        text += "• TP1 - close 30%\n"
-        text += "• TP2 - close 40%\n"
-        text += "• TP3 - close 30%\n\n"
-        text += "⚠️ Always use stop-loss!"
+        text += "1️⃣ <b>Select coins</b>\n"
+        text += "Go to 'My Coins' and enable coins you want to track\n\n"
+        text += "2️⃣ <b>Wait for signals</b>\n"
+        text += "Bot analyzes market 24/7 and sends quality signals\n\n"
+        text += "3️⃣ <b>Open position</b>\n"
+        text += "Enter at the specified price range\n\n"
+        text += "4️⃣ <b>Take profits</b>\n"
+        text += "• TP1 - close 30% of position\n"
+        text += "• TP2 - close 40% of position\n"
+        text += "• TP3 - close remaining 30%\n\n"
+        text += "⚠️ <b>Always use stop-loss!</b>"
     else:
         text = "📚 <b>КАК ИСПОЛЬЗОВАТЬ</b>\n\n"
-        text += "1️⃣ Выбери монеты для отслеживания\n"
-        text += "2️⃣ Жди сигналы\n"
-        text += "3️⃣ Открой позицию по цене входа\n"
-        text += "4️⃣ Выстави TP и SL\n\n"
-        text += "<b>Фиксация прибыли:</b>\n"
-        text += "• TP1 - закрыть 30%\n"
-        text += "• TP2 - закрыть 40%\n"
-        text += "• TP3 - закрыть 30%\n\n"
-        text += "⚠️ Всегда ставь стоп-лосс!"
+        text += "1️⃣ <b>Выбери монеты</b>\n"
+        text += "Зайди в 'Мои монеты' и включи нужные монеты\n\n"
+        text += "2️⃣ <b>Жди сигналы</b>\n"
+        text += "Бот анализирует рынок 24/7 и отправляет качественные сигналы\n\n"
+        text += "3️⃣ <b>Открой позицию</b>\n"
+        text += "Входи по указанной цене\n\n"
+        text += "4️⃣ <b>Фиксируй прибыль</b>\n"
+        text += "• TP1 - закрыть 30% позиции\n"
+        text += "• TP2 - закрыть 40% позиции\n"
+        text += "• TP3 - закрыть оставшиеся 30%\n\n"
+        text += "⚠️ <b>Всегда ставь стоп-лосс!</b>"
     
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
     
-    await delete_and_send(message, text, kb)
+    await delete_and_send(message, text, kb, IMG_GUIDE)
+
+
+# ==================== РЕФЕРАЛКА ====================
+async def show_referral(message: types.Message, lang: str, user_id: int):
+    """Реферальная программа"""
+    bot = Bot.get_current()
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+    
+    ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
+    
+    if lang == "en":
+        text = "👥 <b>REFERRAL PROGRAM</b>\n\n"
+        text += "Invite friends and get bonuses!\n\n"
+        text += f"🔗 <b>Your link:</b>\n<code>{ref_link}</code>\n\n"
+        text += "📋 Tap to copy"
+    else:
+        text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
+        text += "Приглашай друзей и получай бонусы!\n\n"
+        text += f"🔗 <b>Твоя ссылка:</b>\n<code>{ref_link}</code>\n\n"
+        text += "📋 Нажми чтобы скопировать"
+    
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
+    
+    await delete_and_send(message, text, kb, IMG_REF)
 
 
 # ==================== ПОДДЕРЖКА ====================
@@ -371,36 +489,12 @@ async def show_support(message: types.Message, lang: str):
     """Поддержка"""
     if lang == "en":
         text = "💬 <b>SUPPORT</b>\n\n"
-        text += "Questions or problems?\n\n"
-        text += "Write to: @your_support"
+        text += "Have questions or problems?\n\n"
+        text += "📩 Write to: @your_support"
     else:
         text = "💬 <b>ПОДДЕРЖКА</b>\n\n"
         text += "Есть вопросы или проблемы?\n\n"
-        text += "Пиши: @your_support"
-    
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
-    
-    await delete_and_send(message, text, kb)
-
-
-# ==================== РЕФЕРАЛКА ====================
-async def show_referral(message: types.Message, lang: str, user_id: int):
-    """Реферальная программа"""
-    # Реферальная ссылка
-    bot_username = "AlphaEntryBot"  # Замени на своё
-    ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
-    
-    if lang == "en":
-        text = "👥 <b>REFERRAL PROGRAM</b>\n\n"
-        text += "Invite friends and get bonuses!\n\n"
-        text += f"🔗 Your link:\n<code>{ref_link}</code>\n\n"
-        text += "📋 Tap to copy"
-    else:
-        text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
-        text += "Приглашай друзей и получай бонусы!\n\n"
-        text += f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-        text += "📋 Нажми чтобы скопировать"
+        text += "📩 Пиши: @your_support"
     
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
@@ -410,7 +504,7 @@ async def show_referral(message: types.Message, lang: str, user_id: int):
 
 # ==================== АДМИН ПАНЕЛЬ ====================
 async def cmd_admin(message: types.Message):
-    """Админ панель"""
+    """Команда /admin"""
     if message.from_user.id not in ADMIN_IDS:
         return
     
@@ -435,10 +529,10 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("📤 Рассылка", callback_data="admin_broadcast"),
-        InlineKeyboardButton("✅ Выдать доступ", callback_data="admin_grant")
+        InlineKeyboardButton("✅ Выдать", callback_data="admin_grant")
     )
     kb.add(
-        InlineKeyboardButton("❌ Забрать доступ", callback_data="admin_revoke"),
+        InlineKeyboardButton("❌ Забрать", callback_data="admin_revoke"),
         InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")
     )
     
@@ -487,9 +581,6 @@ async def cmd_revoke(message: types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
-# Состояние для рассылки
-broadcast_state = {}
-
 async def cmd_broadcast(message: types.Message):
     """Начать рассылку"""
     if message.from_user.id not in ADMIN_IDS:
@@ -506,7 +597,6 @@ async def cmd_broadcast(message: types.Message):
 
 async def do_broadcast(message: types.Message, text: str):
     """Выполнить рассылку"""
-    from aiogram import Bot
     bot = Bot.get_current()
     
     users = await get_all_users()
@@ -518,14 +608,13 @@ async def do_broadcast(message: types.Message, text: str):
         f"📤 Рассылка началась...\n\n👥 Всего: {len(users)}"
     )
     
-    for user_id in users:
+    for uid in users:
         try:
-            await bot.send_message(user_id, text, parse_mode="HTML")
+            await bot.send_message(uid, text, parse_mode="HTML")
             sent += 1
         except:
             failed += 1
         
-        # Обновляем статус каждые 10 сообщений
         if (sent + failed) % 10 == 0:
             try:
                 await status_msg.edit_text(
@@ -569,15 +658,14 @@ def setup_handlers(dp: Dispatcher):
     # Callback
     dp.register_callback_query_handler(handle_callbacks)
     
-    # Текстовые сообщения (промокоды и рассылка)
+    # Текстовые сообщения
     @dp.message_handler(content_types=["text"])
     async def text_handler(message: types.Message):
         user_id = message.from_user.id
         
-        # Проверяем состояние рассылки
+        # Рассылка
         if user_id in broadcast_state and broadcast_state[user_id] == "waiting_message":
             if user_id in ADMIN_IDS:
-                # Сохраняем текст и просим подтверждение
                 broadcast_state[f"{user_id}_text"] = message.text
                 broadcast_state[user_id] = "confirm"
                 
@@ -593,10 +681,9 @@ def setup_handlers(dp: Dispatcher):
                 await message.answer(text, reply_markup=kb, parse_mode="HTML")
                 return
         
-        # Проверяем промокод
+        # Промокод
         handled = await handle_promo_code(message)
         if not handled:
-            # Не промокод - показываем меню
             lang = await get_user_lang(message.from_user.id)
             paid = await is_paid(message.from_user.id)
             await show_main_menu(message, lang, paid, is_start=True)
