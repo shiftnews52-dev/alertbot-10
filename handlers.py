@@ -555,7 +555,7 @@ async def cmd_cancel(message: types.Message):
 
 
 # ==================== РЕГИСТРАЦИЯ ХЕНДЛЕРОВ ====================
-def register_handlers(dp: Dispatcher):
+def setup_handlers(dp: Dispatcher):
     """Регистрация всех обработчиков"""
     
     # Команды
@@ -600,3 +600,7 @@ def register_handlers(dp: Dispatcher):
             lang = await get_user_lang(message.from_user.id)
             paid = await is_paid(message.from_user.id)
             await show_main_menu(message, lang, paid, is_start=True)
+
+
+# Алиас для совместимости
+register_handlers = setup_handlers
