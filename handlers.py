@@ -359,23 +359,35 @@ async def handle_callbacks(call: types.CallbackQuery):
 
 # ==================== МЕНЮ РАЗДЕЛОВ ====================
 async def show_alerts_menu(message: types.Message, lang: str):
-    """Меню алертов"""
+    """Меню алертов - УЛУЧШЕННОЕ ОТОБРАЖЕНИЕ"""
     pairs = await get_user_pairs(message.from_user.id)
     
     if lang == "en":
         text = "📈 <b>ALERTS SETTINGS</b>\n\n"
-        text += f"You're tracking <b>{len(pairs)}</b> pairs\n\n"
-        text += "You'll receive signals for:\n"
-        for pair in pairs:
-            text += f"• {pair}\n"
-        text += "\n💡 Signals are sent automatically when conditions are met"
+        
+        if pairs:
+            text += f"✅ <b>Active coins ({len(pairs)}/{len(DEFAULT_PAIRS)}):</b>\n"
+            # Показываем монеты в строку
+            pairs_display = ", ".join([p.replace("USDT", "") for p in pairs])
+            text += f"<code>{pairs_display}</code>\n\n"
+            text += "💡 Signals are sent automatically when conditions are met"
+        else:
+            text += "⚠️ <b>No coins enabled!</b>\n\n"
+            text += "You won't receive any signals.\n"
+            text += "👇 Click «Manage Coins» to enable coins"
     else:
         text = "📈 <b>НАСТРОЙКИ АЛЕРТОВ</b>\n\n"
-        text += f"Ты отслеживаешь <b>{len(pairs)}</b> пар\n\n"
-        text += "Получай сигналы по:\n"
-        for pair in pairs:
-            text += f"• {pair}\n"
-        text += "\n💡 Сигналы отправляются автоматически при выполнении условий"
+        
+        if pairs:
+            text += f"✅ <b>Активные монеты ({len(pairs)}/{len(DEFAULT_PAIRS)}):</b>\n"
+            # Показываем монеты в строку
+            pairs_display = ", ".join([p.replace("USDT", "") for p in pairs])
+            text += f"<code>{pairs_display}</code>\n\n"
+            text += "💡 Сигналы отправляются автоматически при выполнении условий"
+        else:
+            text += "⚠️ <b>Нет активных монет!</b>\n\n"
+            text += "Ты не будешь получать сигналы.\n"
+            text += "👇 Нажми «Настроить монеты» чтобы включить"
     
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("⚙️ Настроить монеты" if lang == "ru" else "⚙️ Manage Coins", callback_data="manage_coins"))
@@ -398,20 +410,34 @@ async def show_alerts_menu(message: types.Message, lang: str):
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 async def show_manage_coins(message: types.Message, lang: str):
-    """Управление монетами"""
+    """Управление монетами - УЛУЧШЕННОЕ ОТОБРАЖЕНИЕ"""
     user_id = message.from_user.id
     user_pairs = await get_user_pairs(user_id)
     
     if lang == "en":
         text = "⚙️ <b>MANAGE COINS</b>\n\n"
-        text += "Select coins to track. You'll receive signals only for enabled coins.\n\n"
-        text += f"✅ Enabled: <b>{len(user_pairs)}</b> coins\n"
-        text += f"📊 Available: <b>{len(DEFAULT_PAIRS)}</b> coins"
+        
+        # Показываем активные монеты вверху
+        if user_pairs:
+            text += f"✅ <b>Active ({len(user_pairs)}):</b> "
+            text += ", ".join([p.replace("USDT", "") for p in user_pairs])
+            text += "\n\n"
+        else:
+            text += "⚠️ <b>No coins active</b>\n\n"
+        
+        text += "Tap coin to toggle ON/OFF:"
     else:
         text = "⚙️ <b>НАСТРОЙКА МОНЕТ</b>\n\n"
-        text += "Выбери монеты для отслеживания. Сигналы будут приходить только по включённым монетам.\n\n"
-        text += f"✅ Включено: <b>{len(user_pairs)}</b> монет\n"
-        text += f"📊 Доступно: <b>{len(DEFAULT_PAIRS)}</b> монет"
+        
+        # Показываем активные монеты вверху
+        if user_pairs:
+            text += f"✅ <b>Активные ({len(user_pairs)}):</b> "
+            text += ", ".join([p.replace("USDT", "") for p in user_pairs])
+            text += "\n\n"
+        else:
+            text += "⚠️ <b>Нет активных монет</b>\n\n"
+        
+        text += "Нажми на монету чтобы вкл/выкл:"
     
     # Кнопки с монетами (3 в ряд)
     kb = InlineKeyboardMarkup(row_width=3)
@@ -423,7 +449,7 @@ async def show_manage_coins(message: types.Message, lang: str):
             emoji = "✅"
             callback = f"coin_off_{pair}"
         else:
-            emoji = "❌"
+            emoji = "⬜"
             callback = f"coin_on_{pair}"
         
         buttons.append(InlineKeyboardButton(
@@ -437,8 +463,8 @@ async def show_manage_coins(message: types.Message, lang: str):
     
     # Кнопки управления
     kb.row(
-        InlineKeyboardButton("✅ Включить все" if lang == "ru" else "✅ Enable All", callback_data="coins_all_on"),
-        InlineKeyboardButton("❌ Выключить все" if lang == "ru" else "❌ Disable All", callback_data="coins_all_off")
+        InlineKeyboardButton("✅ Все ВКЛ" if lang == "ru" else "✅ All ON", callback_data="coins_all_on"),
+        InlineKeyboardButton("⬜ Все ВЫКЛ" if lang == "ru" else "⬜ All OFF", callback_data="coins_all_off")
     )
     kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="menu_alerts"))
     
