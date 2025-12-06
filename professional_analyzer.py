@@ -1,15 +1,13 @@
 """
-professional_analyzer_STRICT.py - СТРОГАЯ версия для качественных сигналов
+professional_analyzer.py - СБАЛАНСИРОВАННАЯ версия
 
-ИЗМЕНЕНИЯ:
-1. min_confidence: 40 → 75 (нужно 4/5 условий)
-2. price_distance_threshold: 5% → 1.5% (ближе к уровню)
-3. Добавлен фильтр MTF confluence (тренд на всех TF)
-4. Добавлен фильтр на дубликаты
-5. Требуется подтверждение объёмом
-6. Более строгий RSI фильтр
+ИЗМЕНЕНИЯ от STRICT:
+- min_confidence: 75 → 55 (более лояльно)
+- price_distance: 1.5% → 3% (шире зона)
+- MTF confluence: обязательно → опционально (+бонус)
+- min_level_touches: 2 → 1
 
-РЕЗУЛЬТАТ: 3-10 качественных сигналов в день вместо 44
+РЕЗУЛЬТАТ: 5-15 сигналов в день
 """
 import logging
 import time
@@ -20,33 +18,33 @@ logger = logging.getLogger(__name__)
 
 # Кэш последних сигналов для предотвращения дубликатов
 _signal_cache = {}  # {pair: {'side': 'LONG', 'timestamp': 123456, 'price': 42000}}
-DUPLICATE_WINDOW = 4 * 3600  # 4 часа - не повторять сигнал для той же пары
+DUPLICATE_WINDOW = 2 * 3600  # 2 часа - не повторять сигнал для той же пары
 
 
 class CryptoMickyAnalyzer:
     """
-    СТРОГИЙ анализатор для качественных сигналов (3-10 в день)
+    Сбалансированный анализатор (5-15 сигналов в день)
     """
     
     def __init__(self):
-        # ==================== СТРОГИЕ НАСТРОЙКИ ====================
-        self.min_confidence = 75          # Было 40, теперь 75 (4/5 условий)
-        self.price_distance_threshold = 1.5  # Было 5%, теперь 1.5%
+        # ==================== СБАЛАНСИРОВАННЫЕ НАСТРОЙКИ ====================
+        self.min_confidence = 55          # Было 75, теперь 55
+        self.price_distance_threshold = 3.0  # Было 1.5%, теперь 3%
         
-        # Требуется MTF confluence
-        self.require_mtf_confluence = True
+        # MTF confluence теперь опционально (даёт бонус)
+        self.require_mtf_confluence = False
         
         # Минимальное количество касаний уровня
-        self.min_level_touches = 2
+        self.min_level_touches = 1        # Было 2, теперь 1
         
-        # RSI фильтры (более строгие)
-        self.rsi_oversold_max = 40      # Для LONG: RSI должен быть 30-40
-        self.rsi_oversold_min = 25
-        self.rsi_overbought_min = 60    # Для SHORT: RSI должен быть 60-70
-        self.rsi_overbought_max = 75
+        # RSI фильтры (более широкие)
+        self.rsi_oversold_max = 45        # Для LONG: RSI < 45
+        self.rsi_oversold_min = 20
+        self.rsi_overbought_min = 55      # Для SHORT: RSI > 55
+        self.rsi_overbought_max = 80
         
         # Объём
-        self.min_volume_ratio = 1.3     # Объём должен быть 130%+ от среднего
+        self.min_volume_ratio = 1.0       # Было 1.3, теперь 1.0
         
         self.long_conditions = [
             'price_at_support',
@@ -67,16 +65,17 @@ class CryptoMickyAnalyzer:
     def analyze_pair(self, pair: str, candles_1h: List, candles_4h: List, 
                      candles_1d: List, btc_candles_1h: List = None) -> Optional[Dict]:
         """
-        Главный метод анализа со СТРОГИМИ фильтрами
+        Главный метод анализа
         """
         try:
             # 1. Проверка данных
             if not self._validate_data(candles_1h, candles_4h, candles_1d):
+                logger.info(f"⚠️ {pair}: Invalid data")
                 return None
             
             # 2. Проверка на дубликат
             if self._is_duplicate_signal(pair):
-                logger.debug(f"⏭️ {pair}: Duplicate signal (within {DUPLICATE_WINDOW/3600:.0f}h window)")
+                logger.info(f"⏭️ {pair}: Duplicate (within {DUPLICATE_WINDOW/3600:.0f}h)")
                 return None
             
             # 3. Анализ трендов на ВСЕХ таймфреймах
