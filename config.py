@@ -1,11 +1,11 @@
 """
-config.py - Конфигурация для СТРОГОГО режима (3-10 сигналов в день)
+config.py - СБАЛАНСИРОВАННЫЙ режим (5-15 сигналов в день)
 
-ИЗМЕНЕНИЯ:
-1. MAX_SIGNALS_PER_DAY: 5 → 2 (на пару)
-2. SIGNAL_COOLDOWN: 6h → 8h
-3. Добавлен GLOBAL_MAX_SIGNALS_PER_DAY = 10
-4. MIN_CONFIDENCE: 70 → 75
+ИЗМЕНЕНИЯ от STRICT:
+1. MIN_CONFIDENCE: 75 → 55
+2. SIGNAL_COOLDOWN: 8h → 2h
+3. MAX_SIGNALS_PER_DAY: 2 → 5 (на пару)
+4. GLOBAL_MAX_SIGNALS_PER_DAY: 10 → 20
 """
 import os
 
@@ -72,21 +72,21 @@ BB_PERIOD = 20
 BB_STD = 2
 
 # ==================== СТРОГИЕ НАСТРОЙКИ СИГНАЛОВ ====================
-MIN_CONFIDENCE = 75           # Было 70, теперь 75 (требуется 4/5 условий)
-MIN_SIGNAL_SCORE = 75         # Синоним MIN_CONFIDENCE
+MIN_CONFIDENCE = 55           # Было 75, теперь 55 (более лояльно)
+MIN_SIGNAL_SCORE = 55         # Синоним MIN_CONFIDENCE
 
-ENTRY_ZONE_PERCENT = 0.5      # Было 1.0%, теперь 0.5% (строже)
-STOP_PERCENT = 1.5            # Было 2.0%, теперь 1.5%
+ENTRY_ZONE_PERCENT = 1.0      # Было 0.5%, теперь 1.0%
+STOP_PERCENT = 2.0            # Было 1.5%, теперь 2.0%
 
-# ==================== ЛИМИТЫ НА СИГНАЛЫ (КЛЮЧЕВОЕ!) ====================
-MAX_SIGNALS_PER_DAY = 2       # Было 5, теперь 2 на ОДНУ пару
-GLOBAL_MAX_SIGNALS_PER_DAY = 10  # НОВОЕ: максимум 10 сигналов в день ВСЕГО
-SIGNAL_COOLDOWN = 28800       # Было 21600 (6h), теперь 28800 (8 часов)
+# ==================== ЛИМИТЫ НА СИГНАЛЫ ====================
+MAX_SIGNALS_PER_DAY = 5       # Было 2, теперь 5 на ОДНУ пару
+GLOBAL_MAX_SIGNALS_PER_DAY = 20  # Было 10, теперь 20 всего
+SIGNAL_COOLDOWN = 7200        # Было 28800 (8h), теперь 7200 (2 часа)
 
-# ==================== ФИЛЬТРЫ КАЧЕСТВА (СТРОГИЕ) ====================
-MIN_VOLUME_RATIO = 1.3        # Минимум 130% от среднего объёма
-MIN_VOLATILITY = 0.005        # Было 0.003, теперь 0.5% минимум
-MAX_SPREAD_PERCENT = 0.3      # Было 0.5%, теперь 0.3%
+# ==================== ФИЛЬТРЫ КАЧЕСТВА ====================
+MIN_VOLUME_RATIO = 1.0        # Было 1.3, теперь 1.0 (любой объём)
+MIN_VOLATILITY = 0.003        # Было 0.005, теперь 0.3%
+MAX_SPREAD_PERCENT = 0.5      # Было 0.3%, теперь 0.5%
 
 # ==================== OPTIMIZATION ====================
 PRICE_CACHE_TTL = 30
@@ -114,12 +114,12 @@ if not CRYPTO_BOT_TOKEN:
     print("⚠️  Warning: CRYPTO_BOT_TOKEN not found - payments disabled")
 
 # ==================== STARTUP INFO ====================
-print(f"✅ Config loaded (STRICT MODE - Quality Signals):")
+print(f"✅ Config loaded (BALANCED MODE):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
 print(f"   - DB Path: {DB_PATH}")
 print(f"   - Pairs: {len(DEFAULT_PAIRS)}")
 print(f"   - Timeframe: {TIMEFRAME}")
-print(f"   - Min Confidence: {MIN_CONFIDENCE}% (strict)")
+print(f"   - Min Confidence: {MIN_CONFIDENCE}%")
 print(f"   - Max Signals/Pair/Day: {MAX_SIGNALS_PER_DAY}")
 print(f"   - Global Max Signals/Day: {GLOBAL_MAX_SIGNALS_PER_DAY}")
 print(f"   - Signal Cooldown: {SIGNAL_COOLDOWN/3600:.0f}h")
