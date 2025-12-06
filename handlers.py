@@ -6,8 +6,11 @@ handlers.py - ПОЛНАЯ ВЕРСИЯ
 - Удаление сообщений при переходе
 - Убрана статистика
 - Админ панель
+- Бэкап/Восстановление пользователей
 """
 import logging
+import json
+from datetime import datetime
 from aiogram import Dispatcher, Bot, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -16,7 +19,7 @@ from database import (
     add_user, user_exists, get_user_lang, set_user_lang,
     is_paid, grant_access, revoke_access, get_user_pairs,
     add_user_pair, remove_user_pair, get_total_users, get_paid_users_count,
-    get_all_users
+    get_all_users, export_users_backup, import_users_backup, get_backup_stats
 )
 
 # Импорты для платежей
@@ -409,6 +412,28 @@ async def handle_callbacks(call: types.CallbackQuery):
             await show_admin_panel(call.message, is_callback=True)
         return
     
+    if data == "admin_backup":
+        if user_id in ADMIN_IDS:
+            await call.answer("⏳ Создаю бэкап...")
+            try:
+                backup_data = await export_users_backup()
+                backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
+                
+                from io import BytesIO
+                file = BytesIO(backup_json.encode('utf-8'))
+                file.name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                
+                caption = f"✅ <b>БЭКАП СОЗДАН</b>\n\n"
+                caption += f"👥 Всего: {backup_data['total_users']}\n"
+                caption += f"💎 Премиум: {backup_data['premium_users']}\n"
+                caption += f"📅 {backup_data['exported_at'][:19]}\n\n"
+                caption += "💾 Сохрани этот файл!"
+                
+                await call.message.answer_document(file, caption=caption, parse_mode="HTML")
+            except Exception as e:
+                await call.message.answer(f"❌ Ошибка: {e}")
+        return
+    
     if data == "admin_confirm_broadcast":
         if user_id in ADMIN_IDS and user_id in broadcast_state:
             msg_text = broadcast_state.get(f"{user_id}_text", "")
@@ -585,7 +610,9 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += "<b>Команды:</b>\n"
     text += "/grant ID DAYS — выдать доступ\n"
     text += "/revoke ID — забрать доступ\n"
-    text += "/broadcast — рассылка"
+    text += "/broadcast — рассылка\n"
+    text += "/backup — создать бэкап\n"
+    text += "/restore — восстановить из бэкапа"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -594,6 +621,9 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     )
     kb.add(
         InlineKeyboardButton("❌ Забрать", callback_data="admin_revoke"),
+        InlineKeyboardButton("💾 Бэкап", callback_data="admin_backup")
+    )
+    kb.add(
         InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")
     )
     
@@ -695,6 +725,101 @@ async def do_broadcast(message: types.Message, text: str):
     )
 
 
+# ==================== БЭКАП КОМАНДЫ ====================
+
+async def cmd_backup(message: types.Message):
+    """Команда /backup - создать бэкап пользователей"""
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    await message.answer("⏳ Создаю бэкап...")
+    
+    try:
+        backup_data = await export_users_backup()
+        
+        # Сохраняем в файл
+        backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
+        
+        # Отправляем как документ
+        from io import BytesIO
+        file = BytesIO(backup_json.encode('utf-8'))
+        file.name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        caption = f"✅ <b>БЭКАП СОЗДАН</b>\n\n"
+        caption += f"👥 Всего пользователей: {backup_data['total_users']}\n"
+        caption += f"💎 Премиум: {backup_data['premium_users']}\n"
+        caption += f"📅 Дата: {backup_data['exported_at'][:19]}\n\n"
+        caption += "💾 Сохрани этот файл!"
+        
+        await message.answer_document(file, caption=caption, parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Backup error: {e}")
+        await message.answer(f"❌ Ошибка бэкапа: {e}")
+
+
+async def cmd_restore(message: types.Message):
+    """Команда /restore - подсказка по восстановлению"""
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    text = "📥 <b>ВОССТАНОВЛЕНИЕ ИЗ БЭКАПА</b>\n\n"
+    text += "Чтобы восстановить данные:\n\n"
+    text += "1️⃣ Отправь файл бэкапа (backup_*.json)\n"
+    text += "2️⃣ Бот автоматически импортирует данные\n\n"
+    text += "⚠️ Существующие пользователи будут обновлены,\n"
+    text += "новые — добавлены."
+    
+    await message.answer(text, parse_mode="HTML")
+
+
+async def handle_backup_file(message: types.Message):
+    """Обработка загруженного файла бэкапа"""
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    if not message.document:
+        return
+    
+    if not message.document.file_name.endswith('.json'):
+        await message.answer("❌ Нужен JSON файл бэкапа")
+        return
+    
+    await message.answer("⏳ Импортирую данные...")
+    
+    try:
+        # Скачиваем файл
+        file = await message.bot.get_file(message.document.file_id)
+        file_content = await message.bot.download_file(file.file_path)
+        
+        # Парсим JSON
+        backup_data = json.loads(file_content.read().decode('utf-8'))
+        
+        # Проверяем структуру
+        if "users" not in backup_data:
+            await message.answer("❌ Неверный формат бэкапа")
+            return
+        
+        # Импортируем
+        result = await import_users_backup(backup_data)
+        
+        text = f"✅ <b>БЭКАП ВОССТАНОВЛЕН</b>\n\n"
+        text += f"📥 Импортировано новых: {result['imported']}\n"
+        text += f"🔄 Обновлено существующих: {result['updated']}\n"
+        text += f"❌ Ошибок: {result['errors']}"
+        
+        await message.answer(text, parse_mode="HTML")
+        
+    except json.JSONDecodeError:
+        await message.answer("❌ Ошибка чтения JSON файла")
+    except Exception as e:
+        logger.error(f"Restore error: {e}")
+        await message.answer(f"❌ Ошибка восстановления: {e}")
+
+
 async def cmd_cancel(message: types.Message):
     """Отмена текущего действия"""
     user_id = message.from_user.id
@@ -714,7 +839,12 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_grant, commands=["grant"])
     dp.register_message_handler(cmd_revoke, commands=["revoke"])
     dp.register_message_handler(cmd_broadcast, commands=["broadcast"])
+    dp.register_message_handler(cmd_backup, commands=["backup"])
+    dp.register_message_handler(cmd_restore, commands=["restore"])
     dp.register_message_handler(cmd_cancel, commands=["cancel"])
+    
+    # Документы (для бэкапа)
+    dp.register_message_handler(handle_backup_file, content_types=["document"])
     
     # Callback
     dp.register_callback_query_handler(handle_callbacks)
