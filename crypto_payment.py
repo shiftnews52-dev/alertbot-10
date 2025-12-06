@@ -122,9 +122,9 @@ class CryptoPayAPI:
                         logger.info(f"Invoice created: {invoice['invoice_id']}")
                         return {
                             "invoice_id": invoice["invoice_id"],
-                            "pay_url": invoice["pay_url"],
-                            "amount": invoice["amount"],
-                            "currency": invoice["asset"]
+                            "pay_url": invoice.get("pay_url") or invoice.get("bot_invoice_url"),
+                            "amount": invoice.get("amount", str(amount)),
+                            "currency": invoice.get("asset") or invoice.get("fiat") or "USD"
                         }
                     else:
                         logger.error(f"Crypto Bot API error: {result.get('error')}")
