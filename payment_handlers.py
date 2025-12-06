@@ -206,3 +206,4 @@ async def handle_payment_check(call: types.CallbackQuery):
         # Ошибка или expired
         text = "❌ Invoice expired or error.\n\nCreate new payment." if lang == "en" else "❌ Инвойс истёк или ошибка.\n\nСоздайте новый платёж."
         await call.answer(text, show_alert=True)
+    
