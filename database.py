@@ -526,3 +526,198 @@ async def get_all_users() -> list:
         return [row[0] for row in rows] if rows else []
     finally:
         await db_pool.release(conn)
+
+
+# ==================== БЭКАП СИСТЕМЫ ====================
+import json
+
+async def export_users_backup() -> dict:
+    """
+    Экспорт всех пользователей для бэкапа
+    
+    Returns:
+        {
+            "exported_at": "2024-12-06T12:00:00",
+            "total_users": 150,
+            "premium_users": 25,
+            "users": [
+                {
+                    "id": 123456789,
+                    "paid": 1,
+                    "language": "ru",
+                    "subscription_expiry": 1735689600,
+                    "subscription_plan": "3m",
+                    "balance": 0,
+                    "invited_by": null,
+                    "created_ts": 1701864000,
+                    "pairs": ["BTCUSDT", "ETHUSDT"]
+                },
+                ...
+            ]
+        }
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Получаем всех пользователей
+        cursor = await conn.execute("""
+            SELECT id, invited_by, balance, paid, language, 
+                   subscription_expiry, subscription_plan, created_ts
+            FROM users
+        """)
+        users_rows = await cursor.fetchall()
+        
+        users_data = []
+        premium_count = 0
+        
+        for row in users_rows:
+            user_id = row[0]
+            
+            # Получаем пары пользователя
+            pairs_cursor = await conn.execute(
+                "SELECT pair FROM user_pairs WHERE user_id = ? AND enabled = 1",
+                (user_id,)
+            )
+            pairs_rows = await pairs_cursor.fetchall()
+            pairs = [p[0] for p in pairs_rows] if pairs_rows else []
+            
+            user_data = {
+                "id": user_id,
+                "invited_by": row[1],
+                "balance": row[2],
+                "paid": row[3],
+                "language": row[4],
+                "subscription_expiry": row[5],
+                "subscription_plan": row[6],
+                "created_ts": row[7],
+                "pairs": pairs
+            }
+            users_data.append(user_data)
+            
+            if row[3] == 1:  # paid
+                premium_count += 1
+        
+        backup = {
+            "exported_at": datetime.now().isoformat(),
+            "total_users": len(users_data),
+            "premium_users": premium_count,
+            "users": users_data
+        }
+        
+        logger.info(f"Backup exported: {len(users_data)} users, {premium_count} premium")
+        return backup
+        
+    finally:
+        await db_pool.release(conn)
+
+
+async def import_users_backup(backup_data: dict) -> dict:
+    """
+    Импорт пользователей из бэкапа
+    
+    Args:
+        backup_data: Данные бэкапа
+        
+    Returns:
+        {"imported": 150, "skipped": 5, "errors": 0}
+    """
+    conn = await db_pool.acquire()
+    try:
+        imported = 0
+        skipped = 0
+        errors = 0
+        
+        users = backup_data.get("users", [])
+        
+        for user in users:
+            try:
+                user_id = user["id"]
+                
+                # Проверяем существует ли пользователь
+                cursor = await conn.execute(
+                    "SELECT id FROM users WHERE id = ?", (user_id,)
+                )
+                exists = await cursor.fetchone()
+                
+                if exists:
+                    # Обновляем существующего (сохраняем подписку)
+                    await conn.execute("""
+                        UPDATE users SET 
+                            paid = ?,
+                            subscription_expiry = ?,
+                            subscription_plan = ?,
+                            balance = ?
+                        WHERE id = ?
+                    """, (
+                        user.get("paid", 0),
+                        user.get("subscription_expiry"),
+                        user.get("subscription_plan"),
+                        user.get("balance", 0),
+                        user_id
+                    ))
+                    skipped += 1
+                else:
+                    # Создаём нового
+                    await conn.execute("""
+                        INSERT INTO users (id, invited_by, balance, paid, language, 
+                                          subscription_expiry, subscription_plan, created_ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        user_id,
+                        user.get("invited_by"),
+                        user.get("balance", 0),
+                        user.get("paid", 0),
+                        user.get("language", "ru"),
+                        user.get("subscription_expiry"),
+                        user.get("subscription_plan"),
+                        user.get("created_ts", int(datetime.now().timestamp()))
+                    ))
+                    imported += 1
+                
+                # Восстанавливаем пары
+                pairs = user.get("pairs", [])
+                for pair in pairs:
+                    await conn.execute("""
+                        INSERT OR REPLACE INTO user_pairs (user_id, pair, enabled)
+                        VALUES (?, ?, 1)
+                    """, (user_id, pair))
+                
+            except Exception as e:
+                logger.error(f"Error importing user {user.get('id')}: {e}")
+                errors += 1
+        
+        await conn.commit()
+        
+        result = {"imported": imported, "updated": skipped, "errors": errors}
+        logger.info(f"Backup imported: {result}")
+        return result
+        
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_backup_stats() -> dict:
+    """Статистика для бэкапа"""
+    conn = await db_pool.acquire()
+    try:
+        # Всего пользователей
+        cursor = await conn.execute("SELECT COUNT(*) FROM users")
+        total = (await cursor.fetchone())[0]
+        
+        # Премиум пользователей
+        cursor = await conn.execute("SELECT COUNT(*) FROM users WHERE paid = 1")
+        premium = (await cursor.fetchone())[0]
+        
+        # С активной подпиской
+        now_ts = int(datetime.now().timestamp())
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE subscription_expiry > ?", (now_ts,)
+        )
+        active_sub = (await cursor.fetchone())[0]
+        
+        return {
+            "total_users": total,
+            "premium_users": premium,
+            "active_subscriptions": active_sub
+        }
+    finally:
+        await db_pool.release(conn)
