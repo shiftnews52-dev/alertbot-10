@@ -330,7 +330,7 @@ async def handle_callbacks(call: types.CallbackQuery):
     
     # ===== ОПЛАТА =====
     if data == "menu_pay":
-        await show_payment_menu(call.message, lang)
+        await show_payment_menu(call, is_callback=True)
         return
     
     # ===== МОНЕТЫ ВКЛ/ВЫКЛ =====
@@ -359,7 +359,7 @@ async def handle_callbacks(call: types.CallbackQuery):
         return
     
     # ===== ПЛАТЕЖИ =====
-    if data.startswith("plan_"):
+    if data.startswith("pay_"):
         await handle_plan_selection(call)
         return
     
