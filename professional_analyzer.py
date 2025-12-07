@@ -83,9 +83,9 @@ class CryptoMickyAnalyzer:
             trend_4h = self._determine_trend(candles_4h)
             trend_1d = self._determine_trend(candles_1d)
             
-            logger.debug(f"{pair} Trends: 1H={trend_1h}, 4H={trend_4h}, 1D={trend_1d}")
+            logger.info(f"📊 {pair}: 1H={trend_1h}, 4H={trend_4h}, 1D={trend_1d}")
             
-            # 4. MTF Confluence - ОБЯЗАТЕЛЬНО совпадение трендов
+            # 4. MTF Confluence
             if self.require_mtf_confluence:
                 mtf_result = self._check_mtf_confluence(trend_1h, trend_4h, trend_1d)
                 if mtf_result is None:
@@ -94,8 +94,14 @@ class CryptoMickyAnalyzer:
                 
                 allowed_side, mtf_bonus = mtf_result
             else:
-                allowed_side = None
+                # Без MTF confluence - разрешаем оба направления
+                allowed_side = 'BOTH'
                 mtf_bonus = 0
+                # Но даём бонус если тренды совпадают
+                if trend_1h == trend_4h == trend_1d:
+                    mtf_bonus = 15
+                elif trend_1h == trend_4h or trend_4h == trend_1d:
+                    mtf_bonus = 10
             
             # 5. Поиск уровней
             supports = self._find_support_zones(candles_4h)
@@ -104,6 +110,8 @@ class CryptoMickyAnalyzer:
             # 6. Анализ BTC (обязательно)
             btc_state = self._analyze_btc(btc_candles_1h) if btc_candles_1h else 'neutral'
             
+            logger.info(f"📊 {pair}: BTC={btc_state}, allowed={allowed_side}, supports={len(supports)}, resistances={len(resistances)}")
+            
             # 7. Проверяем LONG (только если MTF разрешает)
             if allowed_side in ['LONG', 'BOTH'] and trend_4h != 'bearish':
                 # BTC должен быть нейтральным или бычьим для LONG
@@ -111,10 +119,14 @@ class CryptoMickyAnalyzer:
                     long_signal = self._check_long_setup(
                         pair, candles_1h, candles_4h, supports, btc_state, mtf_bonus
                     )
-                    if long_signal and long_signal['confidence'] >= self.min_confidence:
-                        self._cache_signal(pair, 'LONG', long_signal['price'])
-                        logger.info(f"✅ {pair} LONG signal: {long_signal['confidence']}%")
-                        return long_signal
+                    if long_signal:
+                        logger.info(f"🔍 {pair} LONG: conf={long_signal['confidence']}% (min={self.min_confidence}%)")
+                        if long_signal['confidence'] >= self.min_confidence:
+                            self._cache_signal(pair, 'LONG', long_signal['price'])
+                            logger.info(f"✅ {pair} LONG SIGNAL: {long_signal['confidence']}%")
+                            return long_signal
+                    else:
+                        logger.debug(f"⏭️ {pair}: No LONG setup found")
             
             # 8. Проверяем SHORT (только если MTF разрешает)
             if allowed_side in ['SHORT', 'BOTH'] and trend_4h != 'bullish':
@@ -123,10 +135,14 @@ class CryptoMickyAnalyzer:
                     short_signal = self._check_short_setup(
                         pair, candles_1h, candles_4h, resistances, btc_state, mtf_bonus
                     )
-                    if short_signal and short_signal['confidence'] >= self.min_confidence:
-                        self._cache_signal(pair, 'SHORT', short_signal['price'])
-                        logger.info(f"✅ {pair} SHORT signal: {short_signal['confidence']}%")
-                        return short_signal
+                    if short_signal:
+                        logger.info(f"🔍 {pair} SHORT: conf={short_signal['confidence']}% (min={self.min_confidence}%)")
+                        if short_signal['confidence'] >= self.min_confidence:
+                            self._cache_signal(pair, 'SHORT', short_signal['price'])
+                            logger.info(f"✅ {pair} SHORT SIGNAL: {short_signal['confidence']}%")
+                            return short_signal
+                    else:
+                        logger.debug(f"⏭️ {pair}: No SHORT setup found")
             
             return None
             
