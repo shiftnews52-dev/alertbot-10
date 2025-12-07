@@ -239,17 +239,22 @@ async def create_payment_invoice(user_id: int, plan_id: str, lang: str = "ru") -
     
     return None
 
-async def check_payment_status(invoice_id: int) -> Optional[str]:
+async def check_payment_status(invoice_id: int) -> tuple:
     """
     Проверить статус платежа
     
     Returns:
-        'paid' | 'active' | 'expired' | None
+        (status, payload) - статус и payload для идентификации плана
+        status: 'paid' | 'active' | 'expired' | None
+        payload: 'user_id:plan_id' или None
     """
     invoice = await crypto_api.get_invoice(invoice_id)
     if invoice:
-        return invoice.get("status")
-    return None
+        status = invoice.get("status")
+        payload = invoice.get("payload", "")
+        logger.info(f"Invoice {invoice_id}: status={status}, payload={payload}")
+        return (status, payload)
+    return (None, None)
 
 async def grant_subscription_access(user_id: int, plan_id: str):
     """
