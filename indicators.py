@@ -4,6 +4,7 @@ indicators.py - Профессиональная логика анализа (И
 1. Добавлен таймфрейм 1d в tf_map
 2. Добавлены недостающие функции для test_indicators.py
 3. Улучшен расчёт ATR и TP/SL
+4. FALLBACK: Binance → Bybit → OKX при блокировке
 """
 import time
 import logging
@@ -14,6 +15,9 @@ import httpx
 from config import *
 
 logger = logging.getLogger(__name__)
+
+# Текущий активный источник данных
+ACTIVE_SOURCE = "binance"  # binance, bybit, okx
 
 class CandleStorage:
     def __init__(self):
@@ -50,13 +54,21 @@ class PriceCache:
 
 PRICE_CACHE = PriceCache()
 
-# ==================== API FUNCTIONS ====================
-async def fetch_price(client: httpx.AsyncClient, pair: str) -> Optional[Tuple[float, float]]:
+# ==================== КОНВЕРТАЦИЯ СИМВОЛОВ ====================
+def to_okx_symbol(pair: str) -> str:
+    """BTCUSDT -> BTC-USDT"""
+    pair = pair.upper()
+    if pair.endswith("USDT"):
+        return pair[:-4] + "-USDT"
+    return pair
+
+def from_okx_symbol(symbol: str) -> str:
+    """BTC-USDT -> BTCUSDT"""
+    return symbol.replace("-", "")
+
+# ==================== BINANCE API ====================
+async def fetch_price_binance(client: httpx.AsyncClient, pair: str) -> Optional[Tuple[float, float]]:
     """Получить цену с Binance"""
-    cached = PRICE_CACHE.get(pair)
-    if cached:
-        return cached
-    
     try:
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={pair.upper()}"
         resp = await client.get(url, timeout=5.0)
@@ -64,50 +76,218 @@ async def fetch_price(client: httpx.AsyncClient, pair: str) -> Optional[Tuple[fl
         data = resp.json()
         price = float(data["lastPrice"])
         volume = float(data["volume"])
-        
-        PRICE_CACHE.set(pair, price, volume)
         return price, volume
     except Exception as e:
-        logger.error(f"Error fetching {pair}: {e}")
+        if "418" in str(e):
+            logger.warning(f"Binance blocked (418), switching to fallback")
+        raise
+
+async def fetch_candles_binance_internal(client: httpx.AsyncClient, pair: str, tf: str, limit: int = 100) -> List[dict]:
+    """Получение свечей с Binance"""
+    tf_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
+    interval = tf_map.get(tf, "1h")
+    
+    url = f"https://api.binance.com/api/v3/klines"
+    params = {"symbol": pair, "interval": interval, "limit": limit}
+    
+    response = await client.get(url, params=params, timeout=10.0)
+    response.raise_for_status()
+    
+    klines = response.json()
+    candles = []
+    
+    for kline in klines:
+        candle = {
+            't': kline[0] / 1000,
+            'o': float(kline[1]),
+            'h': float(kline[2]),
+            'l': float(kline[3]),
+            'c': float(kline[4]),
+            'v': float(kline[5])
+        }
+        candles.append(candle)
+    
+    return candles
+
+# ==================== BYBIT API ====================
+async def fetch_price_bybit(client: httpx.AsyncClient, pair: str) -> Optional[Tuple[float, float]]:
+    """Получить цену с Bybit"""
+    try:
+        url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={pair.upper()}"
+        resp = await client.get(url, timeout=5.0)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("retCode") == 0 and data.get("result", {}).get("list"):
+            ticker = data["result"]["list"][0]
+            price = float(ticker["lastPrice"])
+            volume = float(ticker.get("volume24h", 0))
+            return price, volume
         return None
+    except Exception as e:
+        logger.error(f"Bybit error {pair}: {e}")
+        raise
+
+async def fetch_candles_bybit(client: httpx.AsyncClient, pair: str, tf: str, limit: int = 100) -> List[dict]:
+    """Получение свечей с Bybit"""
+    # Bybit intervals: 1, 3, 5, 15, 30, 60, 120, 240, 360, 720, D, M, W
+    tf_map = {"1h": "60", "4h": "240", "1d": "D"}
+    interval = tf_map.get(tf, "60")
+    
+    url = f"https://api.bybit.com/v5/market/kline"
+    params = {"category": "spot", "symbol": pair.upper(), "interval": interval, "limit": limit}
+    
+    response = await client.get(url, params=params, timeout=10.0)
+    response.raise_for_status()
+    
+    data = response.json()
+    if data.get("retCode") != 0:
+        raise Exception(f"Bybit API error: {data.get('retMsg')}")
+    
+    klines = data.get("result", {}).get("list", [])
+    candles = []
+    
+    # Bybit возвращает в обратном порядке (новые первые)
+    for kline in reversed(klines):
+        candle = {
+            't': int(kline[0]) / 1000,
+            'o': float(kline[1]),
+            'h': float(kline[2]),
+            'l': float(kline[3]),
+            'c': float(kline[4]),
+            'v': float(kline[5])
+        }
+        candles.append(candle)
+    
+    return candles
+
+# ==================== OKX API ====================
+async def fetch_price_okx(client: httpx.AsyncClient, pair: str) -> Optional[Tuple[float, float]]:
+    """Получить цену с OKX"""
+    try:
+        okx_symbol = to_okx_symbol(pair)
+        url = f"https://www.okx.com/api/v5/market/ticker?instId={okx_symbol}"
+        resp = await client.get(url, timeout=5.0)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("code") == "0" and data.get("data"):
+            ticker = data["data"][0]
+            price = float(ticker["last"])
+            volume = float(ticker.get("vol24h", 0))
+            return price, volume
+        return None
+    except Exception as e:
+        logger.error(f"OKX error {pair}: {e}")
+        raise
+
+async def fetch_candles_okx(client: httpx.AsyncClient, pair: str, tf: str, limit: int = 100) -> List[dict]:
+    """Получение свечей с OKX"""
+    # OKX intervals: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 12H, 1D, 1W, 1M
+    tf_map = {"1h": "1H", "4h": "4H", "1d": "1D"}
+    interval = tf_map.get(tf, "1H")
+    
+    okx_symbol = to_okx_symbol(pair)
+    url = f"https://www.okx.com/api/v5/market/candles"
+    params = {"instId": okx_symbol, "bar": interval, "limit": str(limit)}
+    
+    response = await client.get(url, params=params, timeout=10.0)
+    response.raise_for_status()
+    
+    data = response.json()
+    if data.get("code") != "0":
+        raise Exception(f"OKX API error: {data.get('msg')}")
+    
+    klines = data.get("data", [])
+    candles = []
+    
+    # OKX возвращает в обратном порядке (новые первые)
+    for kline in reversed(klines):
+        candle = {
+            't': int(kline[0]) / 1000,
+            'o': float(kline[1]),
+            'h': float(kline[2]),
+            'l': float(kline[3]),
+            'c': float(kline[4]),
+            'v': float(kline[5])
+        }
+        candles.append(candle)
+    
+    return candles
+
+# ==================== УНИВЕРСАЛЬНЫЕ ФУНКЦИИ С FALLBACK ====================
+async def fetch_price(client: httpx.AsyncClient, pair: str) -> Optional[Tuple[float, float]]:
+    """Получить цену с автоматическим fallback"""
+    global ACTIVE_SOURCE
+    
+    # Проверяем кэш
+    cached = PRICE_CACHE.get(pair)
+    if cached:
+        return cached
+    
+    sources = [
+        ("binance", fetch_price_binance),
+        ("bybit", fetch_price_bybit),
+        ("okx", fetch_price_okx),
+    ]
+    
+    # Начинаем с активного источника
+    if ACTIVE_SOURCE != "binance":
+        sources = sorted(sources, key=lambda x: 0 if x[0] == ACTIVE_SOURCE else 1)
+    
+    for source_name, fetch_func in sources:
+        try:
+            result = await fetch_func(client, pair)
+            if result:
+                price, volume = result
+                PRICE_CACHE.set(pair, price, volume)
+                
+                if source_name != ACTIVE_SOURCE:
+                    logger.info(f"✅ Switched to {source_name.upper()} for price data")
+                    ACTIVE_SOURCE = source_name
+                
+                return price, volume
+        except Exception as e:
+            if "418" in str(e) or "teapot" in str(e).lower():
+                logger.warning(f"⚠️ {source_name.upper()} blocked, trying next...")
+            continue
+    
+    logger.error(f"❌ All sources failed for {pair}")
+    return None
 
 async def fetch_candles_binance(pair: str, tf: str, limit: int = 100):
-    """Получение свечей с Binance"""
-    try:
-        async with httpx.AsyncClient() as client:
-            # ИСПРАВЛЕНИЕ: Добавлен 1d таймфрейм
-            tf_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
-            interval = tf_map.get(tf, "1h")
-            
-            url = f"https://api.binance.com/api/v3/klines"
-            params = {
-                "symbol": pair,
-                "interval": interval,
-                "limit": limit
-            }
-            
-            response = await client.get(url, params=params, timeout=10.0)
-            response.raise_for_status()
-            
-            klines = response.json()
-            candles = []
-            
-            for kline in klines:
-                candle = {
-                    't': kline[0] / 1000,
-                    'o': float(kline[1]),
-                    'h': float(kline[2]),
-                    'l': float(kline[3]),
-                    'c': float(kline[4]),
-                    'v': float(kline[5])
-                }
-                candles.append(candle)
-            
-            return candles
-            
-    except Exception as e:
-        logger.error(f"Error fetching candles {pair} {tf}: {e}")
-        return None
+    """Получение свечей с автоматическим fallback"""
+    global ACTIVE_SOURCE
+    
+    sources = [
+        ("binance", fetch_candles_binance_internal),
+        ("bybit", fetch_candles_bybit),
+        ("okx", fetch_candles_okx),
+    ]
+    
+    # Начинаем с активного источника
+    if ACTIVE_SOURCE != "binance":
+        sources = sorted(sources, key=lambda x: 0 if x[0] == ACTIVE_SOURCE else 1)
+    
+    async with httpx.AsyncClient() as client:
+        for source_name, fetch_func in sources:
+            try:
+                candles = await fetch_func(client, pair, tf, limit)
+                if candles:
+                    if source_name != ACTIVE_SOURCE:
+                        logger.info(f"✅ Switched to {source_name.upper()} for candle data")
+                        ACTIVE_SOURCE = source_name
+                    
+                    return candles
+            except Exception as e:
+                if "418" in str(e) or "teapot" in str(e).lower():
+                    logger.warning(f"⚠️ {source_name.upper()} blocked for {pair} {tf}, trying next...")
+                else:
+                    logger.error(f"Error {source_name} {pair} {tf}: {e}")
+                continue
+    
+    logger.error(f"❌ All sources failed for {pair} {tf}")
+    return None
 
 # ==================== ИНДИКАТОРЫ ====================
 def calculate_rsi(closes: List[float], period: int = RSI_PERIOD) -> Optional[float]:
