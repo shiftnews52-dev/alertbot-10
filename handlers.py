@@ -55,6 +55,7 @@ PROMO_CODES = {
 
 # Состояние для рассылки
 broadcast_state = {}
+withdraw_state = {}  # {user_id: True} - ожидаем ввод кошелька
 
 
 # ==================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ====================
@@ -83,6 +84,7 @@ async def delete_and_send(message: types.Message, text: str, kb: InlineKeyboardM
 async def cmd_start(message: types.Message):
     """Команда /start"""
     user_id = message.from_user.id
+    username = message.from_user.username  # Сохраняем username
     
     # Парсим реферальную ссылку (start=ref123456)
     args = message.get_args()
@@ -96,17 +98,19 @@ async def cmd_start(message: types.Message):
     
     # Новый пользователь - показываем выбор языка
     if not await user_exists(user_id):
-        await add_user(user_id, "ru")
+        await add_user(user_id, "ru", invited_by=referrer_id, username=username)
         
         # Устанавливаем реферера если есть
         if referrer_id:
-            from database import set_referrer
-            success = await set_referrer(user_id, referrer_id)
-            if success:
-                logger.info(f"✅ Referrer set: {user_id} invited by {referrer_id}")
+            logger.info(f"✅ Referrer set: {user_id} invited by {referrer_id}")
         
         await show_language_selection(message)
         return
+    
+    # Обновляем username для существующего пользователя (мог измениться)
+    if username:
+        from database import update_username
+        await update_username(user_id, username)
     
     lang = await get_user_lang(user_id)
     paid = await is_paid(user_id)
@@ -467,7 +471,8 @@ async def handle_callbacks(call: types.CallbackQuery):
                 text += f"💰 Всего к выплате: <b>${total_pending:.2f}</b>\n\n"
                 
                 for s in stats[:15]:  # Топ 15
-                    text += f"👤 <code>{s['user_id']}</code>\n"
+                    uname = f"@{s['username']}" if s.get('username') else f"ID: {s['user_id']}"
+                    text += f"👤 {uname}\n"
                     text += f"   💵 Баланс: ${s['earnings']:.2f}\n"
                     text += f"   👥 Рефов: {s['total_referrals']} (💎 {s['paid_referrals']})\n"
                 
@@ -478,6 +483,42 @@ async def handle_callbacks(call: types.CallbackQuery):
             kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="admin_back"))
             
             await delete_and_send(call.message, text, kb)
+        return
+    
+    # Обработка запроса на вывод рефералки
+    if data == "ref_withdraw":
+        from database import get_referral_stats
+        stats = await get_referral_stats(user_id)
+        earnings = stats["earnings"]
+        lang = await get_user_lang(user_id)
+        
+        if earnings < MIN_WITHDRAWAL:
+            text = f"❌ Minimum ${MIN_WITHDRAWAL}" if lang == "en" else f"❌ Минимум ${MIN_WITHDRAWAL}"
+            await call.answer(text, show_alert=True)
+            return
+        
+        # Запрашиваем кошелёк
+        withdraw_state[user_id] = True
+        
+        if lang == "en":
+            text = f"💰 <b>WITHDRAWAL REQUEST</b>\n\n"
+            text += f"Amount: <b>${earnings:.2f}</b>\n\n"
+            text += "Send your USDT wallet address (TRC20):"
+        else:
+            text = f"💰 <b>ЗАПРОС НА ВЫВОД</b>\n\n"
+            text += f"Сумма: <b>${earnings:.2f}</b>\n\n"
+            text += "Отправь адрес своего USDT кошелька (TRC20):"
+        
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("❌ Отмена" if lang == "ru" else "❌ Cancel", callback_data="ref_cancel"))
+        
+        await delete_and_send(call.message, text, kb)
+        return
+    
+    if data == "ref_cancel":
+        withdraw_state.pop(user_id, None)
+        lang = await get_user_lang(user_id)
+        await show_referral(call.message, lang, user_id)
         return
     
     if data == "admin_confirm_broadcast":
@@ -581,6 +622,8 @@ async def show_guide(message: types.Message, lang: str):
 
 
 # ==================== РЕФЕРАЛКА ====================
+MIN_WITHDRAWAL = 20  # Минимальная сумма для вывода
+
 async def show_referral(message: types.Message, lang: str, user_id: int):
     """Реферальная программа"""
     from database import get_referral_stats
@@ -606,7 +649,8 @@ async def show_referral(message: types.Message, lang: str, user_id: int):
         text += f"👥 Traders invited: <b>{total_refs}</b>\n"
         if paid_refs > 0:
             text += f"💎 Paid traders: <b>{paid_refs}</b>\n"
-        text += "\n👉 More active traders — higher your passive income."
+        text += f"\n💵 Minimum withdrawal: ${MIN_WITHDRAWAL}"
+        text += "\n\n👉 More active traders — higher your passive income."
     else:
         text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
         text += "Приглашай друзей и зарабатывай вместе с нами 💸\n\n"
@@ -616,9 +660,16 @@ async def show_referral(message: types.Message, lang: str, user_id: int):
         text += f"👥 Приведено трейдеров: <b>{total_refs}</b>\n"
         if paid_refs > 0:
             text += f"💎 Оплативших: <b>{paid_refs}</b>\n"
-        text += "\n👉 Чем больше активных трейдеров — тем выше твой пассивный доход."
+        text += f"\n💵 Минимум для вывода: ${MIN_WITHDRAWAL}"
+        text += "\n\n👉 Чем больше активных трейдеров — тем выше твой пассивный доход."
     
     kb = InlineKeyboardMarkup()
+    
+    # Кнопка вывода если баланс >= MIN_WITHDRAWAL
+    if earnings >= MIN_WITHDRAWAL:
+        btn_text = "💰 Withdraw" if lang == "en" else "💰 Вывести"
+        kb.add(InlineKeyboardButton(btn_text, callback_data="ref_withdraw"))
+    
     kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
     
     await delete_and_send(message, text, kb, IMG_REF)
@@ -898,7 +949,8 @@ async def cmd_referrals(message: types.Message):
     text += f"💰 Всего к выплате: <b>${total_pending:.2f}</b>\n\n"
     
     for s in stats[:20]:  # Топ 20
-        text += f"👤 <code>{s['user_id']}</code> — ${s['earnings']:.2f}\n"
+        uname = f"@{s['username']}" if s.get('username') else f"ID: {s['user_id']}"
+        text += f"👤 {uname} — ${s['earnings']:.2f}\n"
         text += f"   📊 Рефов: {s['total_referrals']} (💎 оплативших: {s['paid_referrals']})\n"
     
     if len(stats) > 20:
@@ -994,6 +1046,59 @@ def setup_handlers(dp: Dispatcher):
                 )
                 await message.answer(text, reply_markup=kb, parse_mode="HTML")
                 return
+        
+        # Вывод рефералки - получение кошелька
+        if user_id in withdraw_state and withdraw_state[user_id]:
+            from database import get_referral_stats
+            wallet = message.text.strip()
+            
+            # Проверяем что похоже на кошелёк
+            if len(wallet) < 20:
+                lang = await get_user_lang(user_id)
+                text = "❌ Invalid wallet address" if lang == "en" else "❌ Неверный адрес кошелька"
+                await message.answer(text)
+                return
+            
+            stats = await get_referral_stats(user_id)
+            earnings = stats["earnings"]
+            username = message.from_user.username
+            
+            # Отправляем уведомление админам
+            for admin_id in ADMIN_IDS:
+                try:
+                    uname = f"@{username}" if username else f"ID: {user_id}"
+                    admin_text = f"💰 <b>ЗАПРОС НА ВЫВОД</b>\n\n"
+                    admin_text += f"👤 Пользователь: {uname}\n"
+                    admin_text += f"🆔 ID: <code>{user_id}</code>\n"
+                    admin_text += f"💵 Сумма: <b>${earnings:.2f}</b>\n"
+                    admin_text += f"💳 Кошелёк: <code>{wallet}</code>\n\n"
+                    admin_text += f"После перевода: <code>/payout {user_id}</code>"
+                    
+                    await message.bot.send_message(admin_id, admin_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin_id}: {e}")
+            
+            # Подтверждение пользователю
+            withdraw_state.pop(user_id, None)
+            lang = await get_user_lang(user_id)
+            
+            if lang == "en":
+                text = "✅ <b>WITHDRAWAL REQUEST SENT</b>\n\n"
+                text += f"Amount: ${earnings:.2f}\n"
+                text += f"Wallet: {wallet}\n\n"
+                text += "We will process your request within 24 hours."
+            else:
+                text = "✅ <b>ЗАЯВКА НА ВЫВОД ОТПРАВЛЕНА</b>\n\n"
+                text += f"Сумма: ${earnings:.2f}\n"
+                text += f"Кошелёк: {wallet}\n\n"
+                text += "Мы обработаем заявку в течение 24 часов."
+            
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
+            
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+            logger.info(f"Withdrawal request: user={user_id}, amount=${earnings:.2f}, wallet={wallet}")
+            return
         
         # Промокод
         handled = await handle_promo_code(message)
