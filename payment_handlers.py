@@ -174,6 +174,8 @@ async def handle_plan_selection(call: types.CallbackQuery):
 # ==================== ПРОВЕРКА ОПЛАТЫ ====================
 async def handle_payment_check(call: types.CallbackQuery):
     """Проверить статус оплаты"""
+    from database import grant_access, get_referrer, add_referral_bonus
+    
     user_id = call.from_user.id
     lang = await get_user_lang(user_id)
     
@@ -181,10 +183,41 @@ async def handle_payment_check(call: types.CallbackQuery):
     invoice_id = int(call.data.split("_")[1])
     
     # Проверяем статус
-    status = await check_payment_status(invoice_id)
+    status, payload = await check_payment_status(invoice_id)
+    
+    logger.info(f"Payment check: user={user_id}, invoice={invoice_id}, status={status}, payload={payload}")
     
     if status == "paid":
-        # Оплачено!
+        # Оплачено! Парсим payload для получения plan_id
+        plan_id = "1m"  # default
+        price = 20.0    # default
+        days = 30       # default
+        
+        try:
+            # payload формат: "user_id:plan_id"
+            if payload and ":" in payload:
+                _, plan_id = payload.split(":")
+                plan = SUBSCRIPTION_PLANS.get(plan_id)
+                if plan:
+                    days = plan["duration_days"]
+                    price = plan["price"]
+            
+            # ВЫДАЁМ ДОСТУП!
+            await grant_access(user_id, days)
+            logger.info(f"✅ Access granted: user={user_id}, days={days}")
+            
+            # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС (50%)
+            referrer_id = await get_referrer(user_id)
+            if referrer_id:
+                bonus = price * 0.5  # 50% от платежа
+                await add_referral_bonus(referrer_id, bonus, user_id)
+                logger.info(f"💰 Referral bonus: {referrer_id} got ${bonus:.2f} from {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Error granting access: {e}")
+            # Всё равно выдаём 30 дней как fallback
+            await grant_access(user_id, 30)
+        
         if lang == "en":
             text = "✅ <b>Payment Confirmed!</b>\n\n"
             text += "Premium access activated!\n"
@@ -206,4 +239,3 @@ async def handle_payment_check(call: types.CallbackQuery):
         # Ошибка или expired
         text = "❌ Invoice expired or error.\n\nCreate new payment." if lang == "en" else "❌ Инвойс истёк или ошибка.\n\nСоздайте новый платёж."
         await call.answer(text, show_alert=True)
-    
