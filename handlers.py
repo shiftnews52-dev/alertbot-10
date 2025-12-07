@@ -84,9 +84,27 @@ async def cmd_start(message: types.Message):
     """Команда /start"""
     user_id = message.from_user.id
     
+    # Парсим реферальную ссылку (start=ref123456)
+    args = message.get_args()
+    referrer_id = None
+    if args and args.startswith("ref"):
+        try:
+            referrer_id = int(args[3:])  # убираем "ref"
+            logger.info(f"Referral detected: user {user_id} from ref {referrer_id}")
+        except ValueError:
+            pass
+    
     # Новый пользователь - показываем выбор языка
     if not await user_exists(user_id):
         await add_user(user_id, "ru")
+        
+        # Устанавливаем реферера если есть
+        if referrer_id:
+            from database import set_referrer
+            success = await set_referrer(user_id, referrer_id)
+            if success:
+                logger.info(f"✅ Referrer set: {user_id} invited by {referrer_id}")
+        
         await show_language_selection(message)
         return
     
@@ -434,6 +452,34 @@ async def handle_callbacks(call: types.CallbackQuery):
                 await call.message.answer(f"❌ Ошибка: {e}")
         return
     
+    if data == "admin_referrals":
+        if user_id in ADMIN_IDS:
+            from database import get_all_referral_stats
+            stats = await get_all_referral_stats()
+            
+            if not stats:
+                text = "👥 <b>РЕФЕРАЛЫ</b>\n\n"
+                text += "Пока нет рефералов с балансом"
+            else:
+                total_pending = sum(s["earnings"] for s in stats)
+                
+                text = "👥 <b>СТАТИСТИКА РЕФЕРАЛОВ</b>\n\n"
+                text += f"💰 Всего к выплате: <b>${total_pending:.2f}</b>\n\n"
+                
+                for s in stats[:15]:  # Топ 15
+                    text += f"👤 <code>{s['user_id']}</code>\n"
+                    text += f"   💵 Баланс: ${s['earnings']:.2f}\n"
+                    text += f"   👥 Рефов: {s['total_referrals']} (💎 {s['paid_referrals']})\n"
+                
+                if len(stats) > 15:
+                    text += f"\n... и ещё {len(stats) - 15}"
+            
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
     if data == "admin_confirm_broadcast":
         if user_id in ADMIN_IDS and user_id in broadcast_state:
             msg_text = broadcast_state.get(f"{user_id}_text", "")
@@ -537,28 +583,40 @@ async def show_guide(message: types.Message, lang: str):
 # ==================== РЕФЕРАЛКА ====================
 async def show_referral(message: types.Message, lang: str, user_id: int):
     """Реферальная программа"""
+    from database import get_referral_stats
+    
     bot = Bot.get_current()
     bot_info = await bot.get_me()
     bot_username = bot_info.username
     
     ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
     
+    # Получаем реальную статистику
+    stats = await get_referral_stats(user_id)
+    total_refs = stats["total_referrals"]
+    paid_refs = stats["paid_referrals"]
+    earnings = stats["earnings"]
+    
     if lang == "en":
         text = "👥 <b>REFERRAL PROGRAM</b>\n\n"
         text += "Invite friends and earn with us 💸\n\n"
         text += "You get <b>50%</b> from each payment of invited user — no limits.\n\n"
         text += f"🔗 <b>Your personal link:</b>\n<code>{ref_link}</code>\n\n"
-        text += "💰 Your earnings: <b>$0.00</b>\n"
-        text += "👥 Traders invited: <b>0</b>\n\n"
-        text += "👉 More active traders — higher your passive income."
+        text += f"💰 Your earnings: <b>${earnings:.2f}</b>\n"
+        text += f"👥 Traders invited: <b>{total_refs}</b>\n"
+        if paid_refs > 0:
+            text += f"💎 Paid traders: <b>{paid_refs}</b>\n"
+        text += "\n👉 More active traders — higher your passive income."
     else:
         text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
         text += "Приглашай друзей и зарабатывай вместе с нами 💸\n\n"
         text += "Ты получаешь <b>50%</b> с каждого платежа приглашённого пользователя — без лимитов и ограничений.\n\n"
         text += f"🔗 <b>Твоя персональная ссылка:</b>\n<code>{ref_link}</code>\n\n"
-        text += "💰 Твой доход: <b>$0.00</b>\n"
-        text += "👥 Приведено трейдеров: <b>0</b>\n\n"
-        text += "👉 Чем больше активных трейдеров — тем выше твой пассивный доход."
+        text += f"💰 Твой доход: <b>${earnings:.2f}</b>\n"
+        text += f"👥 Приведено трейдеров: <b>{total_refs}</b>\n"
+        if paid_refs > 0:
+            text += f"💎 Оплативших: <b>{paid_refs}</b>\n"
+        text += "\n👉 Чем больше активных трейдеров — тем выше твой пассивный доход."
     
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="back_main"))
@@ -612,7 +670,7 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += "/revoke ID — забрать доступ\n"
     text += "/broadcast — рассылка\n"
     text += "/backup — создать бэкап\n"
-    text += "/restore — восстановить из бэкапа"
+    text += "/referrals — статистика рефералов"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -624,6 +682,7 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
         InlineKeyboardButton("💾 Бэкап", callback_data="admin_backup")
     )
     kb.add(
+        InlineKeyboardButton("👥 Рефералы", callback_data="admin_referrals"),
         InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")
     )
     
@@ -820,6 +879,68 @@ async def handle_backup_file(message: types.Message):
         await message.answer(f"❌ Ошибка восстановления: {e}")
 
 
+async def cmd_referrals(message: types.Message):
+    """Команда /referrals - статистика рефералов"""
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    from database import get_all_referral_stats
+    stats = await get_all_referral_stats()
+    
+    if not stats:
+        await message.answer("👥 Пока нет рефералов с балансом")
+        return
+    
+    total_pending = sum(s["earnings"] for s in stats)
+    
+    text = "👥 <b>СТАТИСТИКА РЕФЕРАЛОВ</b>\n\n"
+    text += f"💰 Всего к выплате: <b>${total_pending:.2f}</b>\n\n"
+    
+    for s in stats[:20]:  # Топ 20
+        text += f"👤 <code>{s['user_id']}</code> — ${s['earnings']:.2f}\n"
+        text += f"   📊 Рефов: {s['total_referrals']} (💎 оплативших: {s['paid_referrals']})\n"
+    
+    if len(stats) > 20:
+        text += f"\n... и ещё {len(stats) - 20}"
+    
+    text += "\n\n<b>Для выплаты:</b>\n"
+    text += "<code>/payout USER_ID</code> — обнулить баланс после выплаты"
+    
+    await message.answer(text, parse_mode="HTML")
+
+
+async def cmd_payout(message: types.Message):
+    """Команда /payout USER_ID - обнулить баланс после выплаты"""
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            target_id = int(parts[1])
+            
+            from database import reset_referral_balance
+            old_balance = await reset_referral_balance(target_id)
+            
+            if old_balance > 0:
+                text = f"✅ <b>ВЫПЛАТА ЗАФИКСИРОВАНА</b>\n\n"
+                text += f"👤 User ID: <code>{target_id}</code>\n"
+                text += f"💰 Выплачено: <b>${old_balance:.2f}</b>\n"
+                text += f"📊 Новый баланс: $0.00"
+            else:
+                text = f"ℹ️ У пользователя {target_id} баланс уже $0.00"
+            
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer("❌ Формат: /payout USER_ID\n\nПример: /payout 123456789")
+    except ValueError:
+        await message.answer("❌ Неверный формат ID")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
 async def cmd_cancel(message: types.Message):
     """Отмена текущего действия"""
     user_id = message.from_user.id
@@ -841,6 +962,8 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_broadcast, commands=["broadcast"])
     dp.register_message_handler(cmd_backup, commands=["backup"])
     dp.register_message_handler(cmd_restore, commands=["restore"])
+    dp.register_message_handler(cmd_referrals, commands=["referrals"])
+    dp.register_message_handler(cmd_payout, commands=["payout"])
     dp.register_message_handler(cmd_cancel, commands=["cancel"])
     
     # Документы (для бэкапа)
