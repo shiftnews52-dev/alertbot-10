@@ -721,3 +721,211 @@ async def get_backup_stats() -> dict:
         }
     finally:
         await db_pool.release(conn)
+
+
+# ==================== РЕФЕРАЛЬНАЯ СИСТЕМА ====================
+
+async def set_referrer(user_id: int, referrer_id: int) -> bool:
+    """
+    Установить реферера для пользователя
+    
+    Args:
+        user_id: ID нового пользователя
+        referrer_id: ID того, кто пригласил
+        
+    Returns:
+        True если успешно
+    """
+    # Нельзя быть своим рефером
+    if user_id == referrer_id:
+        return False
+    
+    conn = await db_pool.acquire()
+    try:
+        # Проверяем что реферер существует
+        cursor = await conn.execute("SELECT id FROM users WHERE id=?", (referrer_id,))
+        if not await cursor.fetchone():
+            return False
+        
+        # Устанавливаем реферера
+        await conn.execute(
+            "UPDATE users SET invited_by=? WHERE id=? AND invited_by IS NULL",
+            (referrer_id, user_id)
+        )
+        await conn.commit()
+        logger.info(f"Referrer set: user {user_id} invited by {referrer_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error setting referrer: {e}")
+        return False
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_referrer(user_id: int) -> int:
+    """Получить ID реферера пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT invited_by FROM users WHERE id=?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_referral_count(user_id: int) -> int:
+    """Получить количество рефералов пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE invited_by=?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_referral_earnings(user_id: int) -> float:
+    """Получить реферальный заработок пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT balance FROM users WHERE id=?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else 0.0
+    finally:
+        await db_pool.release(conn)
+
+
+async def add_referral_bonus(referrer_id: int, amount: float, from_user_id: int) -> bool:
+    """
+    Начислить реферальный бонус
+    
+    Args:
+        referrer_id: ID реферера (кому начисляем)
+        amount: Сумма бонуса
+        from_user_id: ID пользователя который оплатил
+        
+    Returns:
+        True если успешно
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Начисляем бонус
+        await conn.execute(
+            "UPDATE users SET balance = balance + ? WHERE id=?",
+            (amount, referrer_id)
+        )
+        await conn.commit()
+        logger.info(f"Referral bonus: {referrer_id} got ${amount:.2f} from user {from_user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding referral bonus: {e}")
+        return False
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_referral_stats(user_id: int) -> dict:
+    """
+    Получить полную статистику рефералов
+    
+    Returns:
+        {
+            "total_referrals": 10,
+            "paid_referrals": 3,
+            "earnings": 45.00
+        }
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Всего рефералов
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE invited_by=?", (user_id,)
+        )
+        total = (await cursor.fetchone())[0]
+        
+        # Оплативших рефералов
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM users WHERE invited_by=? AND paid=1", (user_id,)
+        )
+        paid = (await cursor.fetchone())[0]
+        
+        # Заработок
+        cursor = await conn.execute(
+            "SELECT balance FROM users WHERE id=?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        earnings = row[0] if row and row[0] else 0.0
+        
+        return {
+            "total_referrals": total,
+            "paid_referrals": paid,
+            "earnings": earnings
+        }
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_all_referral_stats() -> list:
+    """
+    Получить статистику ВСЕХ рефералов для админа
+    
+    Returns:
+        [
+            {"user_id": 123, "referrals": 5, "paid_referrals": 2, "earnings": 30.0, "pending": 30.0},
+            ...
+        ]
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Находим всех у кого есть рефералы или заработок
+        cursor = await conn.execute("""
+            SELECT u.id, u.balance,
+                   (SELECT COUNT(*) FROM users r WHERE r.invited_by = u.id) as total_refs,
+                   (SELECT COUNT(*) FROM users r WHERE r.invited_by = u.id AND r.paid = 1) as paid_refs
+            FROM users u
+            WHERE u.balance > 0 OR EXISTS (SELECT 1 FROM users r WHERE r.invited_by = u.id)
+            ORDER BY u.balance DESC
+        """)
+        rows = await cursor.fetchall()
+        
+        result = []
+        for row in rows:
+            result.append({
+                "user_id": row[0],
+                "earnings": row[1] or 0,
+                "total_referrals": row[2],
+                "paid_referrals": row[3]
+            })
+        
+        return result
+    finally:
+        await db_pool.release(conn)
+
+
+async def reset_referral_balance(user_id: int) -> float:
+    """
+    Сбросить баланс после выплаты (вернуть сумму которая была)
+    """
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT balance FROM users WHERE id=?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        old_balance = row[0] if row and row[0] else 0.0
+        
+        await conn.execute(
+            "UPDATE users SET balance = 0 WHERE id=?", (user_id,)
+        )
+        await conn.commit()
+        
+        logger.info(f"Referral balance reset: user {user_id}, was ${old_balance:.2f}")
+        return old_balance
+    finally:
+        await db_pool.release(conn)
