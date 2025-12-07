@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 INIT_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
+    username TEXT,
     invited_by INTEGER,
     balance REAL DEFAULT 0,
     paid INTEGER DEFAULT 0,
@@ -137,6 +138,14 @@ async def init_db():
     conn = await db_pool.acquire()
     try:
         await conn.executescript(INIT_SQL)
+        
+        # Миграция: добавляем колонку username если нет
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+            logger.info("Added username column to users table")
+        except:
+            pass  # Колонка уже существует
+        
         await conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:
@@ -145,14 +154,27 @@ async def init_db():
     finally:
         await db_pool.release(conn)
 
-async def add_user(user_id: int, lang: str = "ru", invited_by: int = None):
+async def add_user(user_id: int, lang: str = "ru", invited_by: int = None, username: str = None):
     """Добавить нового пользователя"""
     conn = await db_pool.acquire()
     try:
         created_ts = int(datetime.now().timestamp())
         await conn.execute(
-            "INSERT OR IGNORE INTO users (id, language, invited_by, created_ts) VALUES (?, ?, ?, ?)",
-            (user_id, lang, invited_by, created_ts)
+            "INSERT OR IGNORE INTO users (id, language, invited_by, username, created_ts) VALUES (?, ?, ?, ?, ?)",
+            (user_id, lang, invited_by, username, created_ts)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def update_username(user_id: int, username: str):
+    """Обновить username пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "UPDATE users SET username = ? WHERE id = ?",
+            (username, user_id)
         )
         await conn.commit()
     finally:
@@ -560,7 +582,7 @@ async def export_users_backup() -> dict:
     try:
         # Получаем всех пользователей
         cursor = await conn.execute("""
-            SELECT id, invited_by, balance, paid, language, 
+            SELECT id, username, invited_by, balance, paid, language, 
                    subscription_expiry, subscription_plan, created_ts
             FROM users
         """)
@@ -582,18 +604,19 @@ async def export_users_backup() -> dict:
             
             user_data = {
                 "id": user_id,
-                "invited_by": row[1],
-                "balance": row[2],
-                "paid": row[3],
-                "language": row[4],
-                "subscription_expiry": row[5],
-                "subscription_plan": row[6],
-                "created_ts": row[7],
+                "username": row[1],
+                "invited_by": row[2],
+                "balance": row[3],
+                "paid": row[4],
+                "language": row[5],
+                "subscription_expiry": row[6],
+                "subscription_plan": row[7],
+                "created_ts": row[8],
                 "pairs": pairs
             }
             users_data.append(user_data)
             
-            if row[3] == 1:  # paid
+            if row[4] == 1:  # paid
                 premium_count += 1
         
         backup = {
@@ -645,24 +668,27 @@ async def import_users_backup(backup_data: dict) -> dict:
                             paid = ?,
                             subscription_expiry = ?,
                             subscription_plan = ?,
-                            balance = ?
+                            balance = ?,
+                            username = COALESCE(?, username)
                         WHERE id = ?
                     """, (
                         user.get("paid", 0),
                         user.get("subscription_expiry"),
                         user.get("subscription_plan"),
                         user.get("balance", 0),
+                        user.get("username"),
                         user_id
                     ))
                     skipped += 1
                 else:
                     # Создаём нового
                     await conn.execute("""
-                        INSERT INTO users (id, invited_by, balance, paid, language, 
+                        INSERT INTO users (id, username, invited_by, balance, paid, language, 
                                           subscription_expiry, subscription_plan, created_ts)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         user_id,
+                        user.get("username"),
                         user.get("invited_by"),
                         user.get("balance", 0),
                         user.get("paid", 0),
@@ -877,7 +903,7 @@ async def get_all_referral_stats() -> list:
     
     Returns:
         [
-            {"user_id": 123, "referrals": 5, "paid_referrals": 2, "earnings": 30.0, "pending": 30.0},
+            {"user_id": 123, "username": "user123", "referrals": 5, "paid_referrals": 2, "earnings": 30.0},
             ...
         ]
     """
@@ -885,7 +911,7 @@ async def get_all_referral_stats() -> list:
     try:
         # Находим всех у кого есть рефералы или заработок
         cursor = await conn.execute("""
-            SELECT u.id, u.balance,
+            SELECT u.id, u.username, u.balance,
                    (SELECT COUNT(*) FROM users r WHERE r.invited_by = u.id) as total_refs,
                    (SELECT COUNT(*) FROM users r WHERE r.invited_by = u.id AND r.paid = 1) as paid_refs
             FROM users u
@@ -898,9 +924,10 @@ async def get_all_referral_stats() -> list:
         for row in rows:
             result.append({
                 "user_id": row[0],
-                "earnings": row[1] or 0,
-                "total_referrals": row[2],
-                "paid_referrals": row[3]
+                "username": row[1],
+                "earnings": row[2] or 0,
+                "total_referrals": row[3],
+                "paid_referrals": row[4]
             })
         
         return result
