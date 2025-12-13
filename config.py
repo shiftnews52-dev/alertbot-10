@@ -25,15 +25,8 @@ else:
     ]
 
 # DB_PATH - ВАЖНО: использовать /data для Persistent Disk на Render
-# Если /data не существует - создаём директорию
-import os
-_data_dir = "/data"
-if not os.path.exists(_data_dir):
-    try:
-        os.makedirs(_data_dir, exist_ok=True)
-    except:
-        _data_dir = "."  # fallback для локальной разработки
-
+# Проверяем существует ли /data (Persistent Disk на Render)
+_data_dir = "/data" if os.path.exists("/data") else "."
 DB_PATH = os.getenv("DB_PATH", f"{_data_dir}/bot.db")
 
 # ==================== CRYPTO BOT ====================
