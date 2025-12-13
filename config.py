@@ -1,11 +1,12 @@
 """
-config.py - СБАЛАНСИРОВАННЫЙ режим (5-15 сигналов в день)
+config.py - ОПТИМИЗИРОВАННЫЙ режим (8-12 сигналов в день)
 
-ИЗМЕНЕНИЯ от STRICT:
-1. MIN_CONFIDENCE: 75 → 55
-2. SIGNAL_COOLDOWN: 8h → 2h
-3. MAX_SIGNALS_PER_DAY: 2 → 5 (на пару)
-4. GLOBAL_MAX_SIGNALS_PER_DAY: 10 → 20
+ИЗМЕНЕНИЯ:
+1. MIN_CONFIDENCE: 55 → 65 (строже)
+2. SIGNAL_COOLDOWN: 2h → 4h
+3. MAX_SIGNALS_PER_DAY: 5 → 3 (на пару)
+4. GLOBAL_MAX_SIGNALS_PER_DAY: 20 → 12
+5. Добавлен PRICE_DUPLICATE_THRESHOLD для антидублирования
 """
 import os
 
@@ -23,8 +24,17 @@ else:
         7954736516, 390436725, 681419763,
     ]
 
-# DB_PATH
-DB_PATH = os.getenv("DB_PATH", "/data/bot.db" if os.path.exists("/data") else "bot.db")
+# DB_PATH - ВАЖНО: использовать /data для Persistent Disk на Render
+# Если /data не существует - создаём директорию
+import os
+_data_dir = "/data"
+if not os.path.exists(_data_dir):
+    try:
+        os.makedirs(_data_dir, exist_ok=True)
+    except:
+        _data_dir = "."  # fallback для локальной разработки
+
+DB_PATH = os.getenv("DB_PATH", f"{_data_dir}/bot.db")
 
 # ==================== CRYPTO BOT ====================
 CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN", "")
@@ -71,22 +81,26 @@ MACD_SIGNAL = 9
 BB_PERIOD = 20
 BB_STD = 2
 
-# ==================== СТРОГИЕ НАСТРОЙКИ СИГНАЛОВ ====================
-MIN_CONFIDENCE = 55           # Было 75, теперь 55 (более лояльно)
-MIN_SIGNAL_SCORE = 55         # Синоним MIN_CONFIDENCE
+# ==================== НАСТРОЙКИ СИГНАЛОВ ====================
+MIN_CONFIDENCE = 65           # Было 55, теперь 65 (строже)
+MIN_SIGNAL_SCORE = 65         # Синоним MIN_CONFIDENCE
 
-ENTRY_ZONE_PERCENT = 1.0      # Было 0.5%, теперь 1.0%
-STOP_PERCENT = 2.0            # Было 1.5%, теперь 2.0%
+ENTRY_ZONE_PERCENT = 1.0      # ±1.0%
+STOP_PERCENT = 2.0            # 2.0%
 
 # ==================== ЛИМИТЫ НА СИГНАЛЫ ====================
-MAX_SIGNALS_PER_DAY = 5       # Было 2, теперь 5 на ОДНУ пару
-GLOBAL_MAX_SIGNALS_PER_DAY = 20  # Было 10, теперь 20 всего
-SIGNAL_COOLDOWN = 7200        # Было 28800 (8h), теперь 7200 (2 часа)
+MAX_SIGNALS_PER_DAY = 3       # Было 5, теперь 3 на ОДНУ пару
+GLOBAL_MAX_SIGNALS_PER_DAY = 12  # Было 20, теперь 12 всего
+SIGNAL_COOLDOWN = 14400       # Было 7200 (2h), теперь 14400 (4 часа)
+
+# ==================== АНТИДУБЛИРОВАНИЕ ====================
+DUPLICATE_WINDOW = 4 * 3600   # 4 часа - не повторять сигнал для той же пары
+PRICE_DUPLICATE_THRESHOLD = 0.03  # 3% - не повторять сигнал если цена в пределах 3%
 
 # ==================== ФИЛЬТРЫ КАЧЕСТВА ====================
-MIN_VOLUME_RATIO = 1.0        # Было 1.3, теперь 1.0 (любой объём)
-MIN_VOLATILITY = 0.003        # Было 0.005, теперь 0.3%
-MAX_SPREAD_PERCENT = 0.5      # Было 0.3%, теперь 0.5%
+MIN_VOLUME_RATIO = 1.0        # Минимальный объём
+MIN_VOLATILITY = 0.003        # Минимальная волатильность 0.3%
+MAX_SPREAD_PERCENT = 0.5      # Максимальный спред 0.5%
 
 # ==================== OPTIMIZATION ====================
 PRICE_CACHE_TTL = 30
@@ -114,7 +128,7 @@ if not CRYPTO_BOT_TOKEN:
     print("⚠️  Warning: CRYPTO_BOT_TOKEN not found - payments disabled")
 
 # ==================== STARTUP INFO ====================
-print(f"✅ Config loaded (BALANCED MODE):")
+print(f"✅ Config loaded (OPTIMIZED MODE):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
 print(f"   - DB Path: {DB_PATH}")
 print(f"   - Pairs: {len(DEFAULT_PAIRS)}")
@@ -123,4 +137,6 @@ print(f"   - Min Confidence: {MIN_CONFIDENCE}%")
 print(f"   - Max Signals/Pair/Day: {MAX_SIGNALS_PER_DAY}")
 print(f"   - Global Max Signals/Day: {GLOBAL_MAX_SIGNALS_PER_DAY}")
 print(f"   - Signal Cooldown: {SIGNAL_COOLDOWN/3600:.0f}h")
+print(f"   - Duplicate Window: {DUPLICATE_WINDOW/3600:.0f}h")
+print(f"   - Price Duplicate Threshold: {PRICE_DUPLICATE_THRESHOLD*100:.0f}%")
 print(f"   - Entry Zone: ±{ENTRY_ZONE_PERCENT}%")
