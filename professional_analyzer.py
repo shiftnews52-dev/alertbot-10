@@ -1,13 +1,13 @@
 """
-professional_analyzer.py - СБАЛАНСИРОВАННАЯ версия
+professional_analyzer.py - ОПТИМИЗИРОВАННАЯ версия
 
-ИЗМЕНЕНИЯ от STRICT:
-- min_confidence: 75 → 55 (более лояльно)
-- price_distance: 1.5% → 3% (шире зона)
-- MTF confluence: обязательно → опционально (+бонус)
-- min_level_touches: 2 → 1
+ИЗМЕНЕНИЯ:
+- min_confidence: 55 → 65 (строже)
+- DUPLICATE_WINDOW: 2h → 4h (меньше дублей)
+- Улучшенное антидублирование по цене и направлению
+- price_distance: 3% → 5% (шире зона)
 
-РЕЗУЛЬТАТ: 5-15 сигналов в день
+РЕЗУЛЬТАТ: 8-12 сигналов в день
 """
 import logging
 import time
@@ -17,19 +17,21 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Кэш последних сигналов для предотвращения дубликатов
-_signal_cache = {}  # {pair: {'side': 'LONG', 'timestamp': 123456, 'price': 42000}}
-DUPLICATE_WINDOW = 2 * 3600  # 2 часа - не повторять сигнал для той же пары
+# Формат: {pair: [{'side': 'LONG', 'timestamp': 123456, 'price': 42000}, ...]}
+_signal_cache = {}
+DUPLICATE_WINDOW = 4 * 3600  # 4 часа - не повторять сигнал для той же пары
+PRICE_DUPLICATE_THRESHOLD = 0.03  # 3% - не повторять если цена в пределах 3%
 
 
 class CryptoMickyAnalyzer:
     """
-    Сбалансированный анализатор (5-15 сигналов в день)
+    Оптимизированный анализатор (8-12 сигналов в день)
     """
     
     def __init__(self):
-        # ==================== СБАЛАНСИРОВАННЫЕ НАСТРОЙКИ ====================
-        self.min_confidence = 55          # Было 75, теперь 55
-        self.price_distance_threshold = 3.0  # Было 1.5%, теперь 3%
+        # ==================== ОПТИМИЗИРОВАННЫЕ НАСТРОЙКИ ====================
+        self.min_confidence = 65          # Было 55, теперь 65 (строже)
+        self.price_distance_threshold = 5.0  # 5% от уровня
         
         # MTF confluence теперь опционально (даёт бонус)
         self.require_mtf_confluence = False
@@ -37,11 +39,11 @@ class CryptoMickyAnalyzer:
         # Минимальное количество касаний уровня
         self.min_level_touches = 1        # Было 2, теперь 1
         
-        # RSI фильтры (более широкие)
-        self.rsi_oversold_max = 45        # Для LONG: RSI < 45
-        self.rsi_oversold_min = 20
-        self.rsi_overbought_min = 55      # Для SHORT: RSI > 55
-        self.rsi_overbought_max = 80
+        # RSI фильтры (расширенные для реального рынка)
+        self.rsi_oversold_max = 55        # Для LONG: RSI < 55 (было 45)
+        self.rsi_oversold_min = 15
+        self.rsi_overbought_min = 45      # Для SHORT: RSI > 45 (было 55)
+        self.rsi_overbought_max = 85
         
         # Объём
         self.min_volume_ratio = 1.0       # Было 1.3, теперь 1.0
@@ -73,10 +75,8 @@ class CryptoMickyAnalyzer:
                 logger.info(f"⚠️ {pair}: Invalid data")
                 return None
             
-            # 2. Проверка на дубликат
-            if self._is_duplicate_signal(pair):
-                logger.info(f"⏭️ {pair}: Duplicate (within {DUPLICATE_WINDOW/3600:.0f}h)")
-                return None
+            # Получаем текущую цену для проверки дублей
+            current_price = float(candles_1h[-1][4])  # Close price
             
             # 3. Анализ трендов на ВСЕХ таймфреймах
             trend_1h = self._determine_trend(candles_1h)
@@ -112,37 +112,38 @@ class CryptoMickyAnalyzer:
             
             logger.info(f"📊 {pair}: BTC={btc_state}, allowed={allowed_side}, supports={len(supports)}, resistances={len(resistances)}")
             
-            # 7. Проверяем LONG (только если MTF разрешает)
-            if allowed_side in ['LONG', 'BOTH'] and trend_4h != 'bearish':
-                # BTC должен быть нейтральным или бычьим для LONG
-                if btc_state in ['neutral', 'bullish']:
-                    long_signal = self._check_long_setup(
-                        pair, candles_1h, candles_4h, supports, btc_state, mtf_bonus
-                    )
-                    if long_signal:
-                        logger.info(f"🔍 {pair} LONG: conf={long_signal['confidence']}% (min={self.min_confidence}%)")
-                        if long_signal['confidence'] >= self.min_confidence:
+            # 7. Проверяем LONG
+            # Убраны жёсткие фильтры - качество контролируется внутри _check_long_setup
+            if allowed_side in ['LONG', 'BOTH']:
+                long_signal = self._check_long_setup(
+                    pair, candles_1h, candles_4h, supports, btc_state, mtf_bonus
+                )
+                if long_signal:
+                    logger.info(f"🔍 {pair} LONG: conf={long_signal['confidence']}% (min={self.min_confidence}%)")
+                    if long_signal['confidence'] >= self.min_confidence:
+                        # Проверка на дубликат с учётом направления и цены
+                        if self._is_duplicate_signal(pair, 'LONG', long_signal['price']):
+                            logger.info(f"⏭️ {pair}: LONG duplicate (price/direction)")
+                        else:
                             self._cache_signal(pair, 'LONG', long_signal['price'])
                             logger.info(f"✅ {pair} LONG SIGNAL: {long_signal['confidence']}%")
                             return long_signal
-                    else:
-                        logger.debug(f"⏭️ {pair}: No LONG setup found")
             
-            # 8. Проверяем SHORT (только если MTF разрешает)
-            if allowed_side in ['SHORT', 'BOTH'] and trend_4h != 'bullish':
-                # BTC должен быть нейтральным или медвежьим для SHORT
-                if btc_state in ['neutral', 'bearish']:
-                    short_signal = self._check_short_setup(
-                        pair, candles_1h, candles_4h, resistances, btc_state, mtf_bonus
-                    )
-                    if short_signal:
-                        logger.info(f"🔍 {pair} SHORT: conf={short_signal['confidence']}% (min={self.min_confidence}%)")
-                        if short_signal['confidence'] >= self.min_confidence:
+            # 8. Проверяем SHORT
+            if allowed_side in ['SHORT', 'BOTH']:
+                short_signal = self._check_short_setup(
+                    pair, candles_1h, candles_4h, resistances, btc_state, mtf_bonus
+                )
+                if short_signal:
+                    logger.info(f"🔍 {pair} SHORT: conf={short_signal['confidence']}% (min={self.min_confidence}%)")
+                    if short_signal['confidence'] >= self.min_confidence:
+                        # Проверка на дубликат с учётом направления и цены
+                        if self._is_duplicate_signal(pair, 'SHORT', short_signal['price']):
+                            logger.info(f"⏭️ {pair}: SHORT duplicate (price/direction)")
+                        else:
                             self._cache_signal(pair, 'SHORT', short_signal['price'])
                             logger.info(f"✅ {pair} SHORT SIGNAL: {short_signal['confidence']}%")
                             return short_signal
-                    else:
-                        logger.debug(f"⏭️ {pair}: No SHORT setup found")
             
             return None
             
@@ -150,23 +151,70 @@ class CryptoMickyAnalyzer:
             logger.error(f"Error analyzing {pair}: {e}")
             return None
     
-    def _is_duplicate_signal(self, pair: str) -> bool:
-        """Проверка на дубликат сигнала"""
+    def _is_duplicate_signal(self, pair: str, side: str = None, price: float = None) -> bool:
+        """
+        Улучшенная проверка на дубликат сигнала
+        
+        Проверяет:
+        1. Время с последнего сигнала (DUPLICATE_WINDOW)
+        2. Направление сигнала (LONG/SHORT)
+        3. Ценовой уровень (±PRICE_DUPLICATE_THRESHOLD)
+        """
         if pair not in _signal_cache:
             return False
         
-        cached = _signal_cache[pair]
-        time_since = time.time() - cached['timestamp']
+        cached_list = _signal_cache[pair]
+        if not isinstance(cached_list, list):
+            # Старый формат - конвертируем
+            cached_list = [cached_list]
+            _signal_cache[pair] = cached_list
         
-        return time_since < DUPLICATE_WINDOW
+        current_time = time.time()
+        
+        for cached in cached_list:
+            time_since = current_time - cached['timestamp']
+            
+            # Проверка времени
+            if time_since >= DUPLICATE_WINDOW:
+                continue
+            
+            # Если не указано направление/цена - просто проверяем время
+            if side is None or price is None:
+                return True
+            
+            # Проверка направления
+            if cached['side'] != side:
+                continue
+            
+            # Проверка ценового уровня (±3%)
+            cached_price = cached['price']
+            price_diff = abs(price - cached_price) / cached_price
+            
+            if price_diff < PRICE_DUPLICATE_THRESHOLD:
+                logger.info(f"⏭️ {pair}: Price duplicate ({price_diff*100:.1f}% from {cached_price})")
+                return True
+        
+        return False
     
     def _cache_signal(self, pair: str, side: str, price: float):
         """Сохранить сигнал в кэш"""
-        _signal_cache[pair] = {
+        new_signal = {
             'side': side,
             'price': price,
             'timestamp': time.time()
         }
+        
+        if pair not in _signal_cache:
+            _signal_cache[pair] = []
+        
+        # Очистка старых записей
+        current_time = time.time()
+        _signal_cache[pair] = [
+            s for s in _signal_cache[pair] 
+            if current_time - s['timestamp'] < DUPLICATE_WINDOW * 2
+        ]
+        
+        _signal_cache[pair].append(new_signal)
     
     def _check_mtf_confluence(self, trend_1h: str, trend_4h: str, trend_1d: str) -> Optional[Tuple[str, int]]:
         """
@@ -450,7 +498,7 @@ class CryptoMickyAnalyzer:
                 conditions_desc.append(f"🔄 Тренды совпадают (+{mtf_bonus}%)")
             
             # Проверяем минимальное количество условий
-            if len(conditions_met) >= 4:  # Нужно минимум 4 из 5
+            if len(conditions_met) >= 2:  # Было 4, теперь 2 (более лояльно)
                 return self._create_signal(
                     pair, 'LONG', current_price, level, support['touches'],
                     conditions_met, conditions_desc, candles_1h, mtf_bonus
@@ -502,7 +550,7 @@ class CryptoMickyAnalyzer:
                 conditions_met.append('mtf_confluence')
                 conditions_desc.append(f"🔄 Тренды совпадают (+{mtf_bonus}%)")
             
-            if len(conditions_met) >= 4:
+            if len(conditions_met) >= 2:  # Было 4, теперь 2
                 return self._create_signal(
                     pair, 'SHORT', current_price, level, resistance['touches'],
                     conditions_met, conditions_desc, candles_1h, mtf_bonus
