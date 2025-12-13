@@ -76,7 +76,11 @@ class CryptoMickyAnalyzer:
                 return None
             
             # Получаем текущую цену для проверки дублей
-            current_price = float(candles_1h[-1][4])  # Close price
+            last_candle = candles_1h[-1]
+            if isinstance(last_candle, dict):
+                current_price = float(last_candle.get('c', last_candle.get('close', 0)))
+            else:
+                current_price = float(last_candle[4])  # Close price для списка
             
             # 3. Анализ трендов на ВСЕХ таймфреймах
             trend_1h = self._determine_trend(candles_1h)
