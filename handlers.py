@@ -485,6 +485,43 @@ async def handle_callbacks(call: types.CallbackQuery):
             await delete_and_send(call.message, text, kb)
         return
     
+    if data == "admin_limits":
+        if user_id in ADMIN_IDS:
+            from tasks import get_daily_limits_info
+            
+            info = get_daily_limits_info()
+            
+            text = "📊 <b>ЛИМИТЫ СИГНАЛОВ</b>\n\n"
+            text += f"🔥 RARE: {info['rare']['current']}/{info['rare']['max']}\n"
+            text += f"⚡ HIGH: {info['high']['current']}/{info['high']['max']}\n"
+            text += f"📊 MEDIUM: {info['medium']['current']}/{info['medium']['max']}\n\n"
+            text += f"⏱ Активных cooldown: {info['cooldowns']}\n"
+            
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Сбросить лимиты", callback_data="admin_reset_limits"))
+            kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
+    if data == "admin_reset_limits":
+        if user_id in ADMIN_IDS:
+            from tasks import reset_daily_limits, get_daily_limits_info
+            
+            reset_daily_limits()
+            info = get_daily_limits_info()
+            
+            text = "✅ <b>ЛИМИТЫ СБРОШЕНЫ!</b>\n\n"
+            text += f"🔥 RARE: {info['rare']['current']}/{info['rare']['max']}\n"
+            text += f"⚡ HIGH: {info['high']['current']}/{info['high']['max']}\n"
+            text += f"📊 MEDIUM: {info['medium']['current']}/{info['medium']['max']}"
+            
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
     # Обработка запроса на вывод рефералки
     if data == "ref_withdraw":
         from database import get_referral_stats
@@ -719,6 +756,8 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += "<b>Команды:</b>\n"
     text += "/grant ID DAYS — выдать доступ\n"
     text += "/revoke ID — забрать доступ\n"
+    text += "/limits — лимиты сигналов\n"
+    text += "/resetlimits — сбросить лимиты\n"
     text += "/broadcast — рассылка\n"
     text += "/backup — создать бэкап\n"
     text += "/referrals — статистика рефералов"
@@ -734,6 +773,9 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     )
     kb.add(
         InlineKeyboardButton("👥 Рефералы", callback_data="admin_referrals"),
+        InlineKeyboardButton("📊 Лимиты", callback_data="admin_limits")
+    )
+    kb.add(
         InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")
     )
     
@@ -780,6 +822,43 @@ async def cmd_revoke(message: types.Message):
         await message.answer("❌ Неверный ID пользователя")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_limits(message: types.Message):
+    """Показать текущие лимиты сигналов: /limits"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    from tasks import get_daily_limits_info
+    
+    info = get_daily_limits_info()
+    
+    text = "📊 <b>ЛИМИТЫ СИГНАЛОВ</b>\n\n"
+    text += f"🔥 RARE: {info['rare']['current']}/{info['rare']['max']}\n"
+    text += f"⚡ HIGH: {info['high']['current']}/{info['high']['max']}\n"
+    text += f"📊 MEDIUM: {info['medium']['current']}/{info['medium']['max']}\n\n"
+    text += f"⏱ Активных cooldown: {info['cooldowns']}\n\n"
+    text += "Сбросить: /resetlimits"
+    
+    await message.answer(text, parse_mode="HTML")
+
+
+async def cmd_resetlimits(message: types.Message):
+    """Сбросить дневные лимиты: /resetlimits"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    from tasks import reset_daily_limits, get_daily_limits_info
+    
+    reset_daily_limits()
+    info = get_daily_limits_info()
+    
+    text = "✅ <b>ЛИМИТЫ СБРОШЕНЫ!</b>\n\n"
+    text += f"🔥 RARE: {info['rare']['current']}/{info['rare']['max']}\n"
+    text += f"⚡ HIGH: {info['high']['current']}/{info['high']['max']}\n"
+    text += f"📊 MEDIUM: {info['medium']['current']}/{info['medium']['max']}"
+    
+    await message.answer(text, parse_mode="HTML")
 
 
 async def cmd_broadcast(message: types.Message):
@@ -1016,6 +1095,8 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_restore, commands=["restore"])
     dp.register_message_handler(cmd_referrals, commands=["referrals"])
     dp.register_message_handler(cmd_payout, commands=["payout"])
+    dp.register_message_handler(cmd_limits, commands=["limits"])
+    dp.register_message_handler(cmd_resetlimits, commands=["resetlimits"])
     dp.register_message_handler(cmd_cancel, commands=["cancel"])
     
     # Документы (для бэкапа)
