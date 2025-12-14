@@ -1,9 +1,14 @@
 """
-tasks.py - HIGH/MEDIUM система сигналов
+tasks.py - RARE/HIGH/MEDIUM система сигналов
 
-Логика:
-- 🔥 HIGH (≥75%): Без лимита - отправляются всегда
-- 📊 MEDIUM (65-74%): Макс 8 в день
+Пороги:
+- 🔥 RARE: ≥95% (без лимита)
+- ⚡ HIGH: 80-94% (макс 3/день)
+- 📊 MEDIUM: 70-79% (макс 8/день)
+- <70% - игнор
+
+Cooldown: 3 часа на пару
+Upgrade: Если новый сигнал выше уровнем - отправляем даже в cooldown
 """
 import time
 import asyncio
@@ -17,7 +22,9 @@ from aiogram.utils.exceptions import RetryAfter, TelegramAPIError
 from config import (
     CHECK_INTERVAL, DEFAULT_PAIRS, TIMEFRAME,
     MAX_SIGNALS_PER_DAY, BATCH_SEND_SIZE, BATCH_SEND_DELAY,
-    SIGNAL_COOLDOWN, HIGH_CONFIDENCE, MAX_MEDIUM_SIGNALS_PER_DAY
+    SIGNAL_COOLDOWN, COOLDOWN_HOURS_PER_PAIR,
+    RARE_CONFIDENCE, HIGH_CONFIDENCE, MIN_CONFIDENCE,
+    MAX_RARE_SIGNALS_PER_DAY, MAX_HIGH_SIGNALS_PER_DAY, MAX_MEDIUM_SIGNALS_PER_DAY
 )
 from database import (
     get_all_tracked_pairs, get_pairs_with_users,
@@ -32,32 +39,111 @@ crypto_micky_analyzer = CryptoMickyAnalyzer()
 
 LAST_SIGNALS = {}
 
-# Счётчик MEDIUM сигналов (HIGH - без лимита)
+# Счётчики сигналов по типам
+_daily_rare_count = 0
+_daily_high_count = 0
 _daily_medium_count = 0
 _last_reset_date = None
 
+# История последних сигналов по паре (для cooldown + upgrade)
+# {pair: {'time': timestamp, 'type': 'MEDIUM'/'HIGH'/'RARE', 'side': 'LONG'/'SHORT', 'confidence': 75.5}}
+_pair_last_signal = {}
+
+# Приоритет типов (для upgrade логики)
+SIGNAL_PRIORITY = {'MEDIUM': 1, 'HIGH': 2, 'RARE': 3}
+
+
+def _get_signal_type(confidence: float) -> str:
+    """Определить тип сигнала по confidence"""
+    if confidence >= RARE_CONFIDENCE:
+        return 'RARE'
+    elif confidence >= HIGH_CONFIDENCE:
+        return 'HIGH'
+    elif confidence >= MIN_CONFIDENCE:
+        return 'MEDIUM'
+    else:
+        return None  # Игнор
+
 
 def _reset_daily_counter():
-    """Сброс счётчика в новый день"""
-    global _daily_medium_count, _last_reset_date
+    """Сброс счётчиков в новый день"""
+    global _daily_rare_count, _daily_high_count, _daily_medium_count, _last_reset_date
     today = datetime.now().date()
     if _last_reset_date != today:
+        _daily_rare_count = 0
+        _daily_high_count = 0
         _daily_medium_count = 0
         _last_reset_date = today
-        logger.info(f"📅 New day: reset MEDIUM signal counter")
+        logger.info(f"📅 New day: reset all signal counters")
 
 
-def _can_send_medium_signal() -> bool:
-    """Проверка лимита MEDIUM сигналов (HIGH всегда проходят)"""
+def _can_send_signal(signal_type: str) -> bool:
+    """Проверка лимита по типу сигнала"""
     _reset_daily_counter()
-    return _daily_medium_count < MAX_MEDIUM_SIGNALS_PER_DAY
+    if signal_type == 'RARE':
+        return _daily_rare_count < MAX_RARE_SIGNALS_PER_DAY
+    elif signal_type == 'HIGH':
+        return _daily_high_count < MAX_HIGH_SIGNALS_PER_DAY
+    elif signal_type == 'MEDIUM':
+        return _daily_medium_count < MAX_MEDIUM_SIGNALS_PER_DAY
+    return False
 
 
-def _increment_medium_count():
-    """Увеличить счётчик MEDIUM"""
-    global _daily_medium_count
-    _daily_medium_count += 1
-    logger.info(f"📊 MEDIUM signals today: {_daily_medium_count}/{MAX_MEDIUM_SIGNALS_PER_DAY}")
+def _increment_signal_count(signal_type: str):
+    """Увеличить счётчик по типу"""
+    global _daily_rare_count, _daily_high_count, _daily_medium_count
+    if signal_type == 'RARE':
+        _daily_rare_count += 1
+        logger.info(f"📊 RARE signals today: {_daily_rare_count}/{MAX_RARE_SIGNALS_PER_DAY}")
+    elif signal_type == 'HIGH':
+        _daily_high_count += 1
+        logger.info(f"📊 HIGH signals today: {_daily_high_count}/{MAX_HIGH_SIGNALS_PER_DAY}")
+    elif signal_type == 'MEDIUM':
+        _daily_medium_count += 1
+        logger.info(f"📊 MEDIUM signals today: {_daily_medium_count}/{MAX_MEDIUM_SIGNALS_PER_DAY}")
+
+
+def _check_cooldown(pair: str, new_type: str, new_confidence: float) -> tuple:
+    """
+    Проверка cooldown с логикой upgrade.
+    
+    Returns:
+        (can_send: bool, reason: str)
+    """
+    if pair not in _pair_last_signal:
+        return True, "no_previous"
+    
+    last = _pair_last_signal[pair]
+    time_since = time.time() - last['time']
+    cooldown_seconds = COOLDOWN_HOURS_PER_PAIR * 3600
+    
+    # Cooldown не истёк
+    if time_since < cooldown_seconds:
+        # Проверяем upgrade: новый тип выше предыдущего?
+        old_priority = SIGNAL_PRIORITY.get(last['type'], 0)
+        new_priority = SIGNAL_PRIORITY.get(new_type, 0)
+        
+        if new_priority > old_priority:
+            # Upgrade! Разрешаем отправку
+            hours_left = (cooldown_seconds - time_since) / 3600
+            logger.info(f"⬆️ {pair}: Upgrade {last['type']} → {new_type} (cooldown bypass, {hours_left:.1f}h left)")
+            return True, f"upgrade_{last['type']}_to_{new_type}"
+        else:
+            # Нет upgrade - блокируем
+            hours_left = (cooldown_seconds - time_since) / 3600
+            return False, f"cooldown_active ({hours_left:.1f}h left)"
+    
+    return True, "cooldown_expired"
+
+
+def _record_signal(pair: str, signal_type: str, side: str, confidence: float):
+    """Записать отправленный сигнал для cooldown"""
+    _pair_last_signal[pair] = {
+        'time': time.time(),
+        'type': signal_type,
+        'side': side,
+        'confidence': confidence
+    }
 
 
 async def send_message_safe(bot: Bot, user_id: int, text: str, **kwargs):
@@ -147,8 +233,6 @@ async def signal_analyzer(bot: Bot):
             cycle += 1
             _reset_daily_counter()
             
-            # HIGH сигналы всегда проходят, лимит только для MEDIUM
-            
             rows = await get_pairs_with_users()
             
             if not rows:
@@ -168,19 +252,6 @@ async def signal_analyzer(bot: Bot):
             pairs_skipped = 0
             
             for pair, users in pairs_users.items():
-                # Лимит на пару (для MEDIUM сигналов)
-                signals_today = await count_signals_today(pair)
-                if signals_today >= MAX_SIGNALS_PER_DAY:
-                    pairs_skipped += 1
-                    continue
-                
-                # Cooldown
-                if pair in LAST_SIGNALS:
-                    time_since_last = current_time - LAST_SIGNALS[pair]
-                    if time_since_last < SIGNAL_COOLDOWN:
-                        pairs_skipped += 1
-                        continue
-                
                 # Получаем свечи
                 candles_1h = CANDLES.get_candles(pair, "1h")
                 candles_4h = CANDLES.get_candles(pair, "4h")
@@ -202,17 +273,46 @@ async def signal_analyzer(bot: Bot):
                 if signal:
                     confidence_pct = signal['confidence']
                     
-                    # Определяем тип сигнала
-                    is_high = confidence_pct >= HIGH_CONFIDENCE
+                    # 1. Определяем тип сигнала
+                    signal_type = _get_signal_type(confidence_pct)
                     
-                    # MEDIUM сигналы проверяем на лимит
-                    if not is_high and not _can_send_medium_signal():
-                        logger.info(f"⏸️ MEDIUM limit reached, skipping {pair} ({confidence_pct}%)")
+                    # Если confidence < 70% - игнорируем
+                    if signal_type is None:
+                        logger.debug(f"❌ {pair}: confidence {confidence_pct:.1f}% < 70% - ignored")
                         continue
                     
+                    # 2. Проверяем cooldown (с логикой upgrade)
+                    can_send, cooldown_reason = _check_cooldown(pair, signal_type, confidence_pct)
+                    if not can_send:
+                        logger.info(f"⏸️ {pair}: {cooldown_reason}")
+                        pairs_skipped += 1
+                        continue
+                    
+                    # 3. Проверяем дневной лимит по типу
+                    if not _can_send_signal(signal_type):
+                        logger.info(f"⏸️ {pair}: daily_limit_reached for {signal_type}")
+                        pairs_skipped += 1
+                        continue
+                    
+                    # 4. Лимит на пару
+                    signals_today = await count_signals_today(pair)
+                    if signals_today >= MAX_SIGNALS_PER_DAY:
+                        logger.info(f"⏸️ {pair}: pair_limit_reached ({signals_today}/{MAX_SIGNALS_PER_DAY})")
+                        pairs_skipped += 1
+                        continue
+                    
+                    # ✅ Все проверки пройдены - отправляем!
                     signals_found += 1
-                    signal_type = "🔥 HIGH" if is_high else "📊 MEDIUM"
-                    logger.info(f"🎯 SIGNAL: {pair} {signal['side']} ({signal_type}, {confidence_pct}%)")
+                    
+                    # Формируем бейдж
+                    if signal_type == 'RARE':
+                        type_badge = "🔥 RARE"
+                    elif signal_type == 'HIGH':
+                        type_badge = "⚡ HIGH"
+                    else:
+                        type_badge = "📊 MEDIUM"
+                    
+                    logger.info(f"🎯 SIGNAL: {pair} {signal['side']} ({type_badge}, {confidence_pct:.1f}%)")
                     
                     # Формируем сообщение
                     side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
@@ -230,7 +330,7 @@ async def signal_analyzer(bot: Bot):
                     text += f"   TP2: {signal['take_profit_2']:.4f}\n"
                     text += f"   TP3: {signal['take_profit_3']:.4f}\n"
                     text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
-                    text += f"📊 <b>Confidence:</b> {signal_type}\n\n"
+                    text += f"📊 <b>Confidence:</b> {type_badge} ({confidence_pct:.1f}%)\n\n"
                     text += "⚠️ <i>Не финансовый совет</i>"
                     
                     # Отправка
@@ -244,10 +344,14 @@ async def signal_analyzer(bot: Bot):
                     if sent_count > 0:
                         await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
                         LAST_SIGNALS[pair] = current_time
-                        # Считаем только MEDIUM сигналы
-                        if not is_high:
-                            _increment_medium_count()
-                        logger.info(f"✅ Sent {pair} {signal['side']} ({signal_type}) to {sent_count}/{len(users)} users")
+                        
+                        # Записываем для cooldown
+                        _record_signal(pair, signal_type, signal['side'], confidence_pct)
+                        
+                        # Увеличиваем счётчик по типу
+                        _increment_signal_count(signal_type)
+                        
+                        logger.info(f"✅ Sent {pair} {signal['side']} ({type_badge}) to {sent_count}/{len(users)} users")
             
             # Итог цикла
             logger.info(f"[Cycle {cycle}] Analyzed: {pairs_analyzed}, Skipped: {pairs_skipped}, Signals: {signals_found}")
