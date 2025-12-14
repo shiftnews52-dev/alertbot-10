@@ -1,19 +1,22 @@
 """
-config.py - ОПТИМИЗИРОВАННЫЙ режим (8-12 сигналов в день)
+config.py - HIGH/MEDIUM режим сигналов
+
+СИСТЕМА СИГНАЛОВ:
+- HIGH (≥75%): Без лимита - отправляются всегда
+- MEDIUM (65-74%): Макс 8 в день
 
 ИЗМЕНЕНИЯ:
-1. MIN_CONFIDENCE: 55 → 65 (строже)
-2. SIGNAL_COOLDOWN: 2h → 4h
-3. MAX_SIGNALS_PER_DAY: 5 → 3 (на пару)
-4. GLOBAL_MAX_SIGNALS_PER_DAY: 20 → 12
-5. Добавлен PRICE_DUPLICATE_THRESHOLD для антидублирования
+- Убран GLOBAL_MAX_SIGNALS_PER_DAY
+- Добавлен HIGH_CONFIDENCE = 75
+- Добавлен MAX_MEDIUM_SIGNALS_PER_DAY = 8
+- Support: @SHIFTDM
 """
 import os
 
 # ==================== BOT SETTINGS ====================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_NAME = os.getenv("BOT_NAME", "Alpha Entry Bot")
-SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/support")
+SUPPORT_URL = os.getenv("SUPPORT_URL", "https://t.me/SHIFTDM")
 
 # ADMIN_IDS - можно задать через env или в коде
 _admin_ids_env = os.getenv("ADMIN_IDS", "")
@@ -75,16 +78,21 @@ BB_PERIOD = 20
 BB_STD = 2
 
 # ==================== НАСТРОЙКИ СИГНАЛОВ ====================
-MIN_CONFIDENCE = 65           # Было 55, теперь 65 (строже)
+# HIGH сигналы (≥75%) - без лимита, отправляются всегда
+HIGH_CONFIDENCE = 75
+
+# MEDIUM сигналы (65-74%) - лимитированы  
+MIN_CONFIDENCE = 65           # Минимальный порог
 MIN_SIGNAL_SCORE = 65         # Синоним MIN_CONFIDENCE
 
 ENTRY_ZONE_PERCENT = 1.0      # ±1.0%
 STOP_PERCENT = 2.0            # 2.0%
 
 # ==================== ЛИМИТЫ НА СИГНАЛЫ ====================
-MAX_SIGNALS_PER_DAY = 3       # Было 5, теперь 3 на ОДНУ пару
-GLOBAL_MAX_SIGNALS_PER_DAY = 12  # Было 20, теперь 12 всего
-SIGNAL_COOLDOWN = 14400       # Было 7200 (2h), теперь 14400 (4 часа)
+MAX_SIGNALS_PER_DAY = 3       # На ОДНУ пару (для MEDIUM)
+MAX_MEDIUM_SIGNALS_PER_DAY = 8   # Макс MEDIUM сигналов в день
+# HIGH сигналы - БЕЗ ЛИМИТА
+SIGNAL_COOLDOWN = 14400       # 4 часа между сигналами одной пары
 
 # ==================== АНТИДУБЛИРОВАНИЕ ====================
 DUPLICATE_WINDOW = 4 * 3600   # 4 часа - не повторять сигнал для той же пары
@@ -121,14 +129,13 @@ if not CRYPTO_BOT_TOKEN:
     print("⚠️  Warning: CRYPTO_BOT_TOKEN not found - payments disabled")
 
 # ==================== STARTUP INFO ====================
-print(f"✅ Config loaded (OPTIMIZED MODE):")
+print(f"✅ Config loaded (HIGH/MEDIUM MODE):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
 print(f"   - DB Path: {DB_PATH}")
 print(f"   - Pairs: {len(DEFAULT_PAIRS)}")
 print(f"   - Timeframe: {TIMEFRAME}")
-print(f"   - Min Confidence: {MIN_CONFIDENCE}%")
-print(f"   - Max Signals/Pair/Day: {MAX_SIGNALS_PER_DAY}")
-print(f"   - Global Max Signals/Day: {GLOBAL_MAX_SIGNALS_PER_DAY}")
+print(f"   - HIGH Confidence: ≥{HIGH_CONFIDENCE}% (NO LIMIT)")
+print(f"   - MEDIUM Confidence: {MIN_CONFIDENCE}-{HIGH_CONFIDENCE-1}% (max {MAX_MEDIUM_SIGNALS_PER_DAY}/day)")
 print(f"   - Signal Cooldown: {SIGNAL_COOLDOWN/3600:.0f}h")
 print(f"   - Duplicate Window: {DUPLICATE_WINDOW/3600:.0f}h")
 print(f"   - Price Duplicate Threshold: {PRICE_DUPLICATE_THRESHOLD*100:.0f}%")
