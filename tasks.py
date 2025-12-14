@@ -146,6 +146,26 @@ def _record_signal(pair: str, signal_type: str, side: str, confidence: float):
     }
 
 
+def reset_daily_limits():
+    """Принудительный сброс всех дневных лимитов (для админ команды)"""
+    global _daily_rare_count, _daily_high_count, _daily_medium_count
+    _daily_rare_count = 0
+    _daily_high_count = 0
+    _daily_medium_count = 0
+    logger.info("🔄 Daily limits reset by admin")
+    return True
+
+
+def get_daily_limits_info() -> dict:
+    """Получить текущие счётчики (для админ команды)"""
+    return {
+        'rare': {'current': _daily_rare_count, 'max': MAX_RARE_SIGNALS_PER_DAY},
+        'high': {'current': _daily_high_count, 'max': MAX_HIGH_SIGNALS_PER_DAY},
+        'medium': {'current': _daily_medium_count, 'max': MAX_MEDIUM_SIGNALS_PER_DAY},
+        'cooldowns': len(_pair_last_signal)
+    }
+
+
 async def send_message_safe(bot: Bot, user_id: int, text: str, **kwargs):
     """Безопасная отправка с обработкой rate limit"""
     try:
