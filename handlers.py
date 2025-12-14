@@ -682,13 +682,13 @@ async def show_support(message: types.Message, lang: str):
         text = "💬 <b>SUPPORT</b>\n\n"
         text += "Have questions or something not working?\n"
         text += "We're here and will definitely respond 👇\n\n"
-        text += "📩 Contact: @your_support\n\n"
+        text += "📩 Contact: @SHIFTDM\n\n"
         text += "⏱️ Average response time — up to 24 hours"
     else:
         text = "💬 <b>ПОДДЕРЖКА</b>\n\n"
         text += "Есть вопросы или что-то не работает?\n"
         text += "Мы на связи и обязательно ответим 👇\n\n"
-        text += "📩 Контакт: @your_support\n\n"
+        text += "📩 Контакт: @SHIFTDM\n\n"
         text += "⏱️ Среднее время ответа — до 24 часов"
     
     kb = InlineKeyboardMarkup()
