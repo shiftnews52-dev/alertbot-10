@@ -1,15 +1,15 @@
 """
-config.py - HIGH/MEDIUM режим сигналов
+config.py - RARE/HIGH/MEDIUM система сигналов
 
-СИСТЕМА СИГНАЛОВ:
-- HIGH (≥75%): Без лимита - отправляются всегда
-- MEDIUM (65-74%): Макс 8 в день
+ПОРОГИ CONFIDENCE:
+- 🔥 RARE: ≥95% (без лимита)
+- ⚡ HIGH: 80-94% (макс 3/день)
+- 📊 MEDIUM: 70-79% (макс 8/день)
+- <70% - игнор
 
-ИЗМЕНЕНИЯ:
-- Убран GLOBAL_MAX_SIGNALS_PER_DAY
-- Добавлен HIGH_CONFIDENCE = 75
-- Добавлен MAX_MEDIUM_SIGNALS_PER_DAY = 8
-- Support: @SHIFTDM
+COOLDOWN:
+- 3 часа на пару
+- Upgrade разрешён (MEDIUM→HIGH→RARE в cooldown)
 """
 import os
 
@@ -78,21 +78,29 @@ BB_PERIOD = 20
 BB_STD = 2
 
 # ==================== НАСТРОЙКИ СИГНАЛОВ ====================
-# HIGH сигналы (≥75%) - без лимита, отправляются всегда
-HIGH_CONFIDENCE = 75
+# Пороги confidence:
+# RARE: ≥95% - без лимита
+# HIGH: 80-94% - макс 3/день
+# MEDIUM: 70-79% - макс 8/день
+# <70% - игнор
 
-# MEDIUM сигналы (65-74%) - лимитированы  
-MIN_CONFIDENCE = 65           # Минимальный порог
-MIN_SIGNAL_SCORE = 65         # Синоним MIN_CONFIDENCE
+RARE_CONFIDENCE = 95          # RARE порог
+HIGH_CONFIDENCE = 80          # HIGH порог
+MIN_CONFIDENCE = 70           # MEDIUM порог (минимум для отправки)
+MIN_SIGNAL_SCORE = 70         # Синоним MIN_CONFIDENCE
 
 ENTRY_ZONE_PERCENT = 1.0      # ±1.0%
 STOP_PERCENT = 2.0            # 2.0%
 
 # ==================== ЛИМИТЫ НА СИГНАЛЫ ====================
-MAX_SIGNALS_PER_DAY = 3       # На ОДНУ пару (для MEDIUM)
-MAX_MEDIUM_SIGNALS_PER_DAY = 8   # Макс MEDIUM сигналов в день
-# HIGH сигналы - БЕЗ ЛИМИТА
-SIGNAL_COOLDOWN = 14400       # 4 часа между сигналами одной пары
+MAX_SIGNALS_PER_DAY = 3           # На ОДНУ пару
+MAX_RARE_SIGNALS_PER_DAY = 999    # RARE - без лимита (фактически)
+MAX_HIGH_SIGNALS_PER_DAY = 3      # HIGH - макс 3/день
+MAX_MEDIUM_SIGNALS_PER_DAY = 8    # MEDIUM - макс 8/день
+
+# ==================== COOLDOWN ====================
+COOLDOWN_HOURS_PER_PAIR = 3       # 3 часа между сигналами одной пары
+SIGNAL_COOLDOWN = COOLDOWN_HOURS_PER_PAIR * 3600  # В секундах
 
 # ==================== АНТИДУБЛИРОВАНИЕ ====================
 DUPLICATE_WINDOW = 4 * 3600   # 4 часа - не повторять сигнал для той же пары
@@ -129,14 +137,15 @@ if not CRYPTO_BOT_TOKEN:
     print("⚠️  Warning: CRYPTO_BOT_TOKEN not found - payments disabled")
 
 # ==================== STARTUP INFO ====================
-print(f"✅ Config loaded (HIGH/MEDIUM MODE):")
+print(f"✅ Config loaded (RARE/HIGH/MEDIUM MODE):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
 print(f"   - DB Path: {DB_PATH}")
 print(f"   - Pairs: {len(DEFAULT_PAIRS)}")
 print(f"   - Timeframe: {TIMEFRAME}")
-print(f"   - HIGH Confidence: ≥{HIGH_CONFIDENCE}% (NO LIMIT)")
-print(f"   - MEDIUM Confidence: {MIN_CONFIDENCE}-{HIGH_CONFIDENCE-1}% (max {MAX_MEDIUM_SIGNALS_PER_DAY}/day)")
-print(f"   - Signal Cooldown: {SIGNAL_COOLDOWN/3600:.0f}h")
+print(f"   - 🔥 RARE: ≥{RARE_CONFIDENCE}% (no limit)")
+print(f"   - ⚡ HIGH: {HIGH_CONFIDENCE}-{RARE_CONFIDENCE-1}% (max {MAX_HIGH_SIGNALS_PER_DAY}/day)")
+print(f"   - 📊 MEDIUM: {MIN_CONFIDENCE}-{HIGH_CONFIDENCE-1}% (max {MAX_MEDIUM_SIGNALS_PER_DAY}/day)")
+print(f"   - Cooldown: {COOLDOWN_HOURS_PER_PAIR}h (upgrade allowed)")
 print(f"   - Duplicate Window: {DUPLICATE_WINDOW/3600:.0f}h")
 print(f"   - Price Duplicate Threshold: {PRICE_DUPLICATE_THRESHOLD*100:.0f}%")
 print(f"   - Entry Zone: ±{ENTRY_ZONE_PERCENT}%")
