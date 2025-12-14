@@ -18,35 +18,35 @@ fi
 echo "✅ BOT_TOKEN: ****${BOT_TOKEN: -5}"
 echo "✅ ADMIN_IDS: $ADMIN_IDS"
 
-# ==================== ОЧИСТКА СТАРОЙ БД ====================
+# ==================== ОПРЕДЕЛЕНИЕ ПУТИ К БД ====================
 echo ""
 echo "🧹 =========================================="
-echo "🧹 DATABASE CLEANUP"
+echo "🧹 DATABASE SETUP"
 echo "🧹 =========================================="
 echo ""
 
-# Путь к БД
-DB_PATH="${DB_PATH:-/opt/render/project/src/bot.db}"
+# Автоопределение пути к БД
+# Если /data существует (Persistent Disk) - используем его
+if [ -d "/data" ]; then
+    DB_PATH="/data/bot.db"
+    echo "✅ Persistent Disk found at /data"
+else
+    DB_PATH="${DB_PATH:-/opt/render/project/src/bot.db}"
+    echo "⚠️  No Persistent Disk - using ephemeral storage"
+fi
+
+export DB_PATH
 echo "📍 DB Path: $DB_PATH"
 
-# Проверяем существует ли БД
+# НЕ удаляем БД если она на Persistent Disk!
 if [ -f "$DB_PATH" ]; then
-    echo "⚠️  Old database found!"
-    echo "🗑️  Removing old database to ensure clean schema..."
-    
-    # Удаляем старую БД и все связанные файлы
-    rm -f "$DB_PATH"
-    rm -f "${DB_PATH}-shm"
-    rm -f "${DB_PATH}-wal"
-    rm -f "${DB_PATH}-journal"
-    
-    if [ ! -f "$DB_PATH" ]; then
-        echo "✅ Old database removed successfully!"
+    if [[ "$DB_PATH" == /data/* ]]; then
+        echo "✅ Existing database found on Persistent Disk - keeping it!"
     else
-        echo "❌ Failed to remove old database"
+        echo "⚠️  Database in ephemeral storage - will be recreated"
     fi
 else
-    echo "✅ No old database found - will create fresh one"
+    echo "📝 No database found - will create new one"
 fi
 
 echo ""
@@ -57,7 +57,7 @@ echo "🔧 DATABASE MIGRATION"
 echo "🔧 =========================================="
 echo ""
 
-# Запускаем миграцию (на всякий случай)
+# Запускаем миграцию
 echo "⏳ Running database migration..."
 python migrate_db.py
 
@@ -107,48 +107,3 @@ if [ $? -ne 0 ]; then
     echo "❌ =========================================="
     exit 1
 fi
-```
-
-#### **5. Внизу нажми "Commit changes"**
-
-#### **6. Commit message:**
-```
-🗑️ Add auto DB cleanup on startup
-```
-
-#### **7. Нажми "Commit changes"**
-
----
-
-## ✅ **ПОСЛЕ COMMIT:**
-
-**Render автоматически:**
-1. Обнаружит изменения (30 сек)
-2. Запустит новый build (1 мин)
-3. **Удалит старую БД** 🗑️ ← ВАЖНО!
-4. Создаст новую БД с правильной схемой
-5. Запустит бота ✅
-
-**Общее время: ~5 минут**
-
----
-
-## 📊 **ОЖИДАЕМЫЕ ЛОГИ:**
-```
-🧹 DATABASE CLEANUP          ← НОВОЕ!
-📍 DB Path: /opt/render/project/src/bot.db
-⚠️  Old database found!
-🗑️  Removing old database to ensure clean schema...
-✅ Old database removed successfully!  ← БД УДАЛЕНА!
-
-🔧 DATABASE MIGRATION
-✅ Migration completed successfully
-
-📊 IMPORTING HISTORICAL DATA
-✅ Historical data imported successfully!
-
-🤖 STARTING BOT
-✅ Database initialized
-✅ PnL tracker initialized  ← БЕЗ ОШИБКИ!
-✅ Bot started successfully!
-Start polling.  ← РАБОТАЕТ!
