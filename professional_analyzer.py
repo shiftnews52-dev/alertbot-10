@@ -651,24 +651,59 @@ class CryptoMickyAnalyzer:
         """Расчёт стоп-лосса на основе ATR"""
         atr_val = self._calculate_atr(candles)
         
-        if side == 'LONG':
-            return level - (atr_val * 1.5)  # 1.5 ATR под уровнем
-        else:
-            return level + (atr_val * 1.5)  # 1.5 ATR над уровнем
-    
-    def _calculate_take_profits(self, side: str, current_price: float, 
-                                level: float, candles_1h: List) -> Tuple[float, float, float]:
-        """Расчёт целей на основе ATR (R:R 2:1, 4:1, 6:1)"""
-        atr_val = self._calculate_atr(candles_1h)
+        # Минимальный ATR - 1% от цены
+        min_atr = level * 0.01
+        atr_val = max(atr_val, min_atr)
         
         if side == 'LONG':
-            tp1 = current_price + (atr_val * 2)   # 2:1 R/R
-            tp2 = current_price + (atr_val * 4)   # 4:1 R/R
-            tp3 = current_price + (atr_val * 6)   # 6:1 R/R
+            sl = level - (atr_val * 1.5)  # 1.5 ATR под уровнем
+            # Проверка: SL должен быть ниже входа для LONG
+            if sl >= level:
+                sl = level * 0.985  # -1.5%
         else:
-            tp1 = current_price - (atr_val * 2)
-            tp2 = current_price - (atr_val * 4)
-            tp3 = current_price - (atr_val * 6)
+            sl = level + (atr_val * 1.5)  # 1.5 ATR над уровнем
+            # Проверка: SL должен быть выше входа для SHORT
+            if sl <= level:
+                sl = level * 1.015  # +1.5%
+        
+        return sl
+    
+    def _calculate_take_profits(self, side: str, entry_price: float, 
+                                level: float, candles_1h: List) -> Tuple[float, float, float]:
+        """Расчёт целей на основе ATR (R:R 2:1, 4:1, 6:1)
+        
+        Используем level (уровень входа) для расчёта TP, 
+        чтобы цели были корректны относительно entry_zone
+        """
+        atr_val = self._calculate_atr(candles_1h)
+        
+        # Минимальный ATR - 1% от цены (на случай низкой волатильности)
+        min_atr = level * 0.01
+        atr_val = max(atr_val, min_atr)
+        
+        # Используем level для расчёта TP (не current_price!)
+        base_price = level
+        
+        if side == 'LONG':
+            tp1 = base_price + (atr_val * 2)   # 2:1 R/R
+            tp2 = base_price + (atr_val * 4)   # 4:1 R/R
+            tp3 = base_price + (atr_val * 6)   # 6:1 R/R
+            
+            # Проверка: TP должен быть выше входа для LONG
+            if tp1 <= base_price:
+                tp1 = base_price * 1.02  # +2%
+                tp2 = base_price * 1.04  # +4%
+                tp3 = base_price * 1.06  # +6%
+        else:
+            tp1 = base_price - (atr_val * 2)
+            tp2 = base_price - (atr_val * 4)
+            tp3 = base_price - (atr_val * 6)
+            
+            # Проверка: TP должен быть ниже входа для SHORT
+            if tp1 >= base_price:
+                tp1 = base_price * 0.98  # -2%
+                tp2 = base_price * 0.96  # -4%
+                tp3 = base_price * 0.94  # -6%
         
         return tp1, tp2, tp3
     
