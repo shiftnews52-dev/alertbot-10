@@ -1,7 +1,9 @@
 """
-tasks.py - ИСПРАВЛЕННАЯ ВЕРСИЯ
-- Логирование на уровне INFO (видно в Render)
-- Глобальный лимит сигналов
+tasks.py - HIGH/MEDIUM система сигналов
+
+Логика:
+- 🔥 HIGH (≥75%): Без лимита - отправляются всегда
+- 📊 MEDIUM (65-74%): Макс 8 в день
 """
 import time
 import asyncio
@@ -15,7 +17,7 @@ from aiogram.utils.exceptions import RetryAfter, TelegramAPIError
 from config import (
     CHECK_INTERVAL, DEFAULT_PAIRS, TIMEFRAME,
     MAX_SIGNALS_PER_DAY, BATCH_SEND_SIZE, BATCH_SEND_DELAY,
-    SIGNAL_COOLDOWN, GLOBAL_MAX_SIGNALS_PER_DAY
+    SIGNAL_COOLDOWN, HIGH_CONFIDENCE, MAX_MEDIUM_SIGNALS_PER_DAY
 )
 from database import (
     get_all_tracked_pairs, get_pairs_with_users,
@@ -30,32 +32,32 @@ crypto_micky_analyzer = CryptoMickyAnalyzer()
 
 LAST_SIGNALS = {}
 
-# Глобальный счётчик сигналов
-_daily_signal_count = 0
+# Счётчик MEDIUM сигналов (HIGH - без лимита)
+_daily_medium_count = 0
 _last_reset_date = None
 
 
 def _reset_daily_counter():
     """Сброс счётчика в новый день"""
-    global _daily_signal_count, _last_reset_date
+    global _daily_medium_count, _last_reset_date
     today = datetime.now().date()
     if _last_reset_date != today:
-        _daily_signal_count = 0
+        _daily_medium_count = 0
         _last_reset_date = today
-        logger.info(f"📅 New day: reset signal counter")
+        logger.info(f"📅 New day: reset MEDIUM signal counter")
 
 
-def _can_send_more_signals() -> bool:
-    """Проверка глобального лимита"""
+def _can_send_medium_signal() -> bool:
+    """Проверка лимита MEDIUM сигналов (HIGH всегда проходят)"""
     _reset_daily_counter()
-    return _daily_signal_count < GLOBAL_MAX_SIGNALS_PER_DAY
+    return _daily_medium_count < MAX_MEDIUM_SIGNALS_PER_DAY
 
 
-def _increment_signal_count():
-    """Увеличить счётчик"""
-    global _daily_signal_count
-    _daily_signal_count += 1
-    logger.info(f"📊 Signals today: {_daily_signal_count}/{GLOBAL_MAX_SIGNALS_PER_DAY}")
+def _increment_medium_count():
+    """Увеличить счётчик MEDIUM"""
+    global _daily_medium_count
+    _daily_medium_count += 1
+    logger.info(f"📊 MEDIUM signals today: {_daily_medium_count}/{MAX_MEDIUM_SIGNALS_PER_DAY}")
 
 
 async def send_message_safe(bot: Bot, user_id: int, text: str, **kwargs):
@@ -145,11 +147,7 @@ async def signal_analyzer(bot: Bot):
             cycle += 1
             _reset_daily_counter()
             
-            # Проверка глобального лимита
-            if not _can_send_more_signals():
-                logger.info(f"⏸️ Daily limit reached ({_daily_signal_count}/{GLOBAL_MAX_SIGNALS_PER_DAY})")
-                await asyncio.sleep(300)
-                continue
+            # HIGH сигналы всегда проходят, лимит только для MEDIUM
             
             rows = await get_pairs_with_users()
             
@@ -170,12 +168,7 @@ async def signal_analyzer(bot: Bot):
             pairs_skipped = 0
             
             for pair, users in pairs_users.items():
-                # Глобальный лимит
-                if not _can_send_more_signals():
-                    logger.info(f"⏸️ Global limit reached, stopping")
-                    break
-                
-                # Лимит на пару
+                # Лимит на пару (для MEDIUM сигналов)
                 signals_today = await count_signals_today(pair)
                 if signals_today >= MAX_SIGNALS_PER_DAY:
                     pairs_skipped += 1
@@ -207,19 +200,22 @@ async def signal_analyzer(bot: Bot):
                 )
                 
                 if signal:
+                    confidence_pct = signal['confidence']
+                    
+                    # Определяем тип сигнала
+                    is_high = confidence_pct >= HIGH_CONFIDENCE
+                    
+                    # MEDIUM сигналы проверяем на лимит
+                    if not is_high and not _can_send_medium_signal():
+                        logger.info(f"⏸️ MEDIUM limit reached, skipping {pair} ({confidence_pct}%)")
+                        continue
+                    
                     signals_found += 1
-                    logger.info(f"🎯 SIGNAL: {pair} {signal['side']} (confidence: {signal['confidence']}%)")
+                    signal_type = "🔥 HIGH" if is_high else "📊 MEDIUM"
+                    logger.info(f"🎯 SIGNAL: {pair} {signal['side']} ({signal_type}, {confidence_pct}%)")
                     
                     # Формируем сообщение
                     side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
-                    
-                    confidence_pct = signal['confidence']
-                    if confidence_pct >= 85:
-                        confidence_level = "🔥 HIGH"
-                    elif confidence_pct >= 70:
-                        confidence_level = "✅ MEDIUM"
-                    else:
-                        confidence_level = "⚡ LOW"
                     
                     text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
                     text += "<b>Логика:</b>\n"
@@ -234,7 +230,7 @@ async def signal_analyzer(bot: Bot):
                     text += f"   TP2: {signal['take_profit_2']:.4f}\n"
                     text += f"   TP3: {signal['take_profit_3']:.4f}\n"
                     text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
-                    text += f"📊 <b>Confidence:</b> {confidence_level}\n\n"
+                    text += f"📊 <b>Confidence:</b> {signal_type}\n\n"
                     text += "⚠️ <i>Не финансовый совет</i>"
                     
                     # Отправка
@@ -248,8 +244,10 @@ async def signal_analyzer(bot: Bot):
                     if sent_count > 0:
                         await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
                         LAST_SIGNALS[pair] = current_time
-                        _increment_signal_count()
-                        logger.info(f"✅ Sent {pair} {signal['side']} to {sent_count}/{len(users)} users")
+                        # Считаем только MEDIUM сигналы
+                        if not is_high:
+                            _increment_medium_count()
+                        logger.info(f"✅ Sent {pair} {signal['side']} ({signal_type}) to {sent_count}/{len(users)} users")
             
             # Итог цикла
             logger.info(f"[Cycle {cycle}] Analyzed: {pairs_analyzed}, Skipped: {pairs_skipped}, Signals: {signals_found}")
