@@ -680,7 +680,7 @@ async def show_referral(message: types.Message, lang: str, user_id: int):
     if lang == "en":
         text = "👥 <b>REFERRAL PROGRAM</b>\n\n"
         text += "Invite friends and earn with us 💸\n\n"
-        text += "You get <b>50%</b> from each payment of invited user — no limits.\n\n"
+        text += "You get <b>$10</b> for each invited user who pays — no limits.\n\n"
         text += f"🔗 <b>Your personal link:</b>\n<code>{ref_link}</code>\n\n"
         text += f"💰 Your earnings: <b>${earnings:.2f}</b>\n"
         text += f"👥 Traders invited: <b>{total_refs}</b>\n"
@@ -691,7 +691,7 @@ async def show_referral(message: types.Message, lang: str, user_id: int):
     else:
         text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
         text += "Приглашай друзей и зарабатывай вместе с нами 💸\n\n"
-        text += "Ты получаешь <b>50%</b> с каждого платежа приглашённого пользователя — без лимитов и ограничений.\n\n"
+        text += "Ты получаешь <b>$10</b> за каждого приглашённого, который оплатит подписку — без лимитов.\n\n"
         text += f"🔗 <b>Твоя персональная ссылка:</b>\n<code>{ref_link}</code>\n\n"
         text += f"💰 Твой доход: <b>${earnings:.2f}</b>\n"
         text += f"👥 Приведено трейдеров: <b>{total_refs}</b>\n"
