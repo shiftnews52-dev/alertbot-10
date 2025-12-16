@@ -495,7 +495,15 @@ async def handle_callbacks(call: types.CallbackQuery):
             text += f"🔥 RARE: {info['rare']['current']}/{info['rare']['max']}\n"
             text += f"⚡ HIGH: {info['high']['current']}/{info['high']['max']}\n"
             text += f"📊 MEDIUM: {info['medium']['current']}/{info['medium']['max']}\n\n"
-            text += f"⏱ Активных cooldown: {info['cooldowns']}\n"
+            
+            # Временные окна HIGH
+            text += "<b>⏰ Окна HIGH (UTC):</b>\n"
+            for slot_info in info.get('high_slots', []):
+                text += f"   {slot_info}\n"
+            text += "\n"
+            
+            text += f"⏱ Cooldowns: {info['cooldowns']}\n"
+            text += f"📥 Очередь: {info['queue_size']}"
             
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Сбросить лимиты", callback_data="admin_reset_limits"))
@@ -837,7 +845,15 @@ async def cmd_limits(message: types.Message):
     text += f"🔥 RARE: {info['rare']['current']}/{info['rare']['max']}\n"
     text += f"⚡ HIGH: {info['high']['current']}/{info['high']['max']}\n"
     text += f"📊 MEDIUM: {info['medium']['current']}/{info['medium']['max']}\n\n"
-    text += f"⏱ Активных cooldown: {info['cooldowns']}\n\n"
+    
+    # Временные окна HIGH
+    text += "<b>⏰ Окна HIGH (UTC):</b>\n"
+    for slot_info in info.get('high_slots', []):
+        text += f"   {slot_info}\n"
+    text += "\n"
+    
+    text += f"⏱ Активных cooldown: {info['cooldowns']}\n"
+    text += f"📥 В очереди: {info['queue_size']}\n\n"
     text += "Сбросить: /resetlimits"
     
     await message.answer(text, parse_mode="HTML")
