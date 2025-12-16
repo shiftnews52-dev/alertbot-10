@@ -102,6 +102,25 @@ MAX_MEDIUM_SIGNALS_PER_DAY = 8    # MEDIUM - макс 8/день
 COOLDOWN_HOURS_PER_PAIR = 3       # 3 часа между сигналами одной пары
 SIGNAL_COOLDOWN = COOLDOWN_HOURS_PER_PAIR * 3600  # В секундах
 
+# ==================== РАСПРЕДЕЛЕНИЕ СИГНАЛОВ ПО ВРЕМЕНИ ====================
+# Временные окна для HIGH сигналов (UTC)
+HIGH_TIME_SLOTS = [
+    (6, 10),   # Утро: 06:00-10:00 UTC (09:00-13:00 MSK)
+    (11, 15),  # День: 11:00-15:00 UTC (14:00-18:00 MSK)
+    (16, 21),  # Вечер: 16:00-21:00 UTC (19:00-00:00 MSK)
+]
+
+# Минимальные интервалы между сигналами одного типа (в минутах)
+MIN_INTERVAL_RARE = 180      # 3 часа между RARE
+MIN_INTERVAL_HIGH = 180      # 3 часа между HIGH  
+MIN_INTERVAL_MEDIUM = 90     # 1.5 часа между MEDIUM
+
+# Время жизни сигнала в очереди (минуты) - после этого считается "протухшим"
+SIGNAL_QUEUE_TTL = 60        # 1 час
+
+# Максимальное отклонение цены для актуальности сигнала (%)
+SIGNAL_PRICE_TOLERANCE = 2.0  # 2% от entry price
+
 # ==================== АНТИДУБЛИРОВАНИЕ ====================
 DUPLICATE_WINDOW = 4 * 3600   # 4 часа - не повторять сигнал для той же пары
 PRICE_DUPLICATE_THRESHOLD = 0.03  # 3% - не повторять сигнал если цена в пределах 3%
@@ -137,15 +156,14 @@ if not CRYPTO_BOT_TOKEN:
     print("⚠️  Warning: CRYPTO_BOT_TOKEN not found - payments disabled")
 
 # ==================== STARTUP INFO ====================
-print(f"✅ Config loaded (RARE/HIGH/MEDIUM MODE):")
+print(f"✅ Config loaded (RARE/HIGH/MEDIUM + Time Distribution):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
 print(f"   - DB Path: {DB_PATH}")
 print(f"   - Pairs: {len(DEFAULT_PAIRS)}")
-print(f"   - Timeframe: {TIMEFRAME}")
 print(f"   - 🔥 RARE: ≥{RARE_CONFIDENCE}% (no limit)")
-print(f"   - ⚡ HIGH: {HIGH_CONFIDENCE}-{RARE_CONFIDENCE-1}% (max {MAX_HIGH_SIGNALS_PER_DAY}/day)")
+print(f"   - ⚡ HIGH: {HIGH_CONFIDENCE}-{RARE_CONFIDENCE-1}% (max {MAX_HIGH_SIGNALS_PER_DAY}/day, 3 time slots)")
 print(f"   - 📊 MEDIUM: {MIN_CONFIDENCE}-{HIGH_CONFIDENCE-1}% (max {MAX_MEDIUM_SIGNALS_PER_DAY}/day)")
-print(f"   - Cooldown: {COOLDOWN_HOURS_PER_PAIR}h (upgrade allowed)")
-print(f"   - Duplicate Window: {DUPLICATE_WINDOW/3600:.0f}h")
-print(f"   - Price Duplicate Threshold: {PRICE_DUPLICATE_THRESHOLD*100:.0f}%")
-print(f"   - Entry Zone: ±{ENTRY_ZONE_PERCENT}%")
+print(f"   - Cooldown: {COOLDOWN_HOURS_PER_PAIR}h per pair")
+print(f"   - Intervals: RARE={MIN_INTERVAL_RARE}min, HIGH={MIN_INTERVAL_HIGH}min, MEDIUM={MIN_INTERVAL_MEDIUM}min")
+print(f"   - HIGH slots (UTC): {HIGH_TIME_SLOTS}")
+print(f"   - Queue TTL: {SIGNAL_QUEUE_TTL}min")
