@@ -1,20 +1,23 @@
 """
-tasks.py - RARE/HIGH/MEDIUM система сигналов
+tasks.py - RARE/HIGH/MEDIUM система сигналов с распределением по времени
 
 Пороги:
 - 🔥 RARE: ≥95% (без лимита)
-- ⚡ HIGH: 80-94% (макс 3/день)
-- 📊 MEDIUM: 70-79% (макс 8/день)
+- ⚡ HIGH: 80-94% (макс 3/день, по временным окнам)
+- 📊 MEDIUM: 70-79% (макс 8/день, интервал 90 мин)
 - <70% - игнор
 
-Cooldown: 3 часа на пару
-Upgrade: Если новый сигнал выше уровнем - отправляем даже в cooldown
+Распределение:
+- HIGH: 3 временных окна (утро/день/вечер)
+- MEDIUM: минимум 90 минут между сигналами
+- Очередь для отложенных сигналов
 """
 import time
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
+from typing import Optional, Dict, List
 import httpx
 from aiogram import Bot
 from aiogram.utils.exceptions import RetryAfter, TelegramAPIError
@@ -24,7 +27,9 @@ from config import (
     MAX_SIGNALS_PER_DAY, BATCH_SEND_SIZE, BATCH_SEND_DELAY,
     SIGNAL_COOLDOWN, COOLDOWN_HOURS_PER_PAIR,
     RARE_CONFIDENCE, HIGH_CONFIDENCE, MIN_CONFIDENCE,
-    MAX_RARE_SIGNALS_PER_DAY, MAX_HIGH_SIGNALS_PER_DAY, MAX_MEDIUM_SIGNALS_PER_DAY
+    MAX_RARE_SIGNALS_PER_DAY, MAX_HIGH_SIGNALS_PER_DAY, MAX_MEDIUM_SIGNALS_PER_DAY,
+    HIGH_TIME_SLOTS, MIN_INTERVAL_RARE, MIN_INTERVAL_HIGH, MIN_INTERVAL_MEDIUM,
+    SIGNAL_QUEUE_TTL, SIGNAL_PRICE_TOLERANCE
 )
 from database import (
     get_all_tracked_pairs, get_pairs_with_users,
@@ -45,9 +50,18 @@ _daily_high_count = 0
 _daily_medium_count = 0
 _last_reset_date = None
 
+# Счётчики по временным окнам для HIGH (индекс окна -> использовано)
+_high_slots_used = {}  # {slot_index: True/False}
+
+# Время последнего сигнала по типу (для интервалов)
+_last_signal_time = {'RARE': 0, 'HIGH': 0, 'MEDIUM': 0}
+
 # История последних сигналов по паре (для cooldown + upgrade)
-# {pair: {'time': timestamp, 'type': 'MEDIUM'/'HIGH'/'RARE', 'side': 'LONG'/'SHORT', 'confidence': 75.5}}
 _pair_last_signal = {}
+
+# Очередь отложенных сигналов
+# [{signal_data, queued_at, users, pair}]
+_signal_queue: List[Dict] = []
 
 # Приоритет типов (для upgrade логики)
 SIGNAL_PRIORITY = {'MEDIUM': 1, 'HIGH': 2, 'RARE': 3}
@@ -67,37 +81,106 @@ def _get_signal_type(confidence: float) -> str:
 
 def _reset_daily_counter():
     """Сброс счётчиков в новый день"""
-    global _daily_rare_count, _daily_high_count, _daily_medium_count, _last_reset_date
-    today = datetime.now().date()
+    global _daily_rare_count, _daily_high_count, _daily_medium_count, _last_reset_date, _high_slots_used
+    today = datetime.now(timezone.utc).date()
     if _last_reset_date != today:
         _daily_rare_count = 0
         _daily_high_count = 0
         _daily_medium_count = 0
+        _high_slots_used = {}  # Сброс использованных окон
         _last_reset_date = today
-        logger.info(f"📅 New day: reset all signal counters")
+        logger.info(f"📅 New day: reset all signal counters and time slots")
 
 
-def _can_send_signal(signal_type: str) -> bool:
-    """Проверка лимита по типу сигнала"""
-    _reset_daily_counter()
+def _get_current_high_slot() -> Optional[int]:
+    """Получить индекс текущего временного окна для HIGH (или None если вне окон)"""
+    now = datetime.now(timezone.utc)
+    current_hour = now.hour
+    
+    for idx, (start, end) in enumerate(HIGH_TIME_SLOTS):
+        if start <= current_hour < end:
+            return idx
+    return None
+
+
+def _is_high_slot_available() -> tuple:
+    """Проверить доступно ли текущее окно для HIGH сигнала"""
+    slot = _get_current_high_slot()
+    
+    if slot is None:
+        return False, "outside_time_window"
+    
+    if _high_slots_used.get(slot, False):
+        return False, f"slot_{slot}_already_used"
+    
+    return True, f"slot_{slot}_available"
+
+
+def _check_type_interval(signal_type: str) -> tuple:
+    """Проверить прошёл ли минимальный интервал с последнего сигнала этого типа"""
+    last_time = _last_signal_time.get(signal_type, 0)
+    now = time.time()
+    
     if signal_type == 'RARE':
-        return _daily_rare_count < MAX_RARE_SIGNALS_PER_DAY
+        min_interval = MIN_INTERVAL_RARE * 60
     elif signal_type == 'HIGH':
-        return _daily_high_count < MAX_HIGH_SIGNALS_PER_DAY
+        min_interval = MIN_INTERVAL_HIGH * 60
+    else:
+        min_interval = MIN_INTERVAL_MEDIUM * 60
+    
+    time_since = now - last_time
+    
+    if time_since < min_interval:
+        minutes_left = (min_interval - time_since) / 60
+        return False, f"interval_wait ({minutes_left:.0f}min left)"
+    
+    return True, "interval_ok"
+
+
+def _can_send_signal(signal_type: str) -> tuple:
+    """Проверка возможности отправки сигнала (лимит + временное окно + интервал)"""
+    _reset_daily_counter()
+    
+    # 1. Проверка дневного лимита
+    if signal_type == 'RARE':
+        if _daily_rare_count >= MAX_RARE_SIGNALS_PER_DAY:
+            return False, "daily_limit_reached"
+    elif signal_type == 'HIGH':
+        if _daily_high_count >= MAX_HIGH_SIGNALS_PER_DAY:
+            return False, "daily_limit_reached"
+        # Проверка временного окна для HIGH
+        slot_ok, slot_reason = _is_high_slot_available()
+        if not slot_ok:
+            return False, slot_reason
     elif signal_type == 'MEDIUM':
-        return _daily_medium_count < MAX_MEDIUM_SIGNALS_PER_DAY
-    return False
+        if _daily_medium_count >= MAX_MEDIUM_SIGNALS_PER_DAY:
+            return False, "daily_limit_reached"
+    
+    # 2. Проверка минимального интервала
+    interval_ok, interval_reason = _check_type_interval(signal_type)
+    if not interval_ok:
+        return False, interval_reason
+    
+    return True, "can_send"
 
 
 def _increment_signal_count(signal_type: str):
-    """Увеличить счётчик по типу"""
+    """Увеличить счётчик по типу и записать время"""
     global _daily_rare_count, _daily_high_count, _daily_medium_count
+    
+    # Записываем время последнего сигнала
+    _last_signal_time[signal_type] = time.time()
+    
     if signal_type == 'RARE':
         _daily_rare_count += 1
         logger.info(f"📊 RARE signals today: {_daily_rare_count}/{MAX_RARE_SIGNALS_PER_DAY}")
     elif signal_type == 'HIGH':
         _daily_high_count += 1
-        logger.info(f"📊 HIGH signals today: {_daily_high_count}/{MAX_HIGH_SIGNALS_PER_DAY}")
+        # Помечаем окно как использованное
+        slot = _get_current_high_slot()
+        if slot is not None:
+            _high_slots_used[slot] = True
+        logger.info(f"📊 HIGH signals today: {_daily_high_count}/{MAX_HIGH_SIGNALS_PER_DAY} (slot {slot} used)")
     elif signal_type == 'MEDIUM':
         _daily_medium_count += 1
         logger.info(f"📊 MEDIUM signals today: {_daily_medium_count}/{MAX_MEDIUM_SIGNALS_PER_DAY}")
@@ -146,23 +229,151 @@ def _record_signal(pair: str, signal_type: str, side: str, confidence: float):
     }
 
 
+def _add_to_queue(signal_data: Dict, users: List[int], pair: str, signal_type: str):
+    """Добавить сигнал в очередь ожидания"""
+    _signal_queue.append({
+        'signal': signal_data,
+        'users': users,
+        'pair': pair,
+        'type': signal_type,
+        'queued_at': time.time(),
+        'entry_price': signal_data['price']
+    })
+    logger.info(f"📥 {pair} {signal_type} added to queue (queue size: {len(_signal_queue)})")
+
+
+def _check_signal_still_valid(queued_signal: Dict, current_price: float) -> tuple:
+    """Проверить актуален ли сигнал из очереди"""
+    # 1. Проверка TTL
+    age_minutes = (time.time() - queued_signal['queued_at']) / 60
+    if age_minutes > SIGNAL_QUEUE_TTL:
+        return False, f"expired (age: {age_minutes:.0f}min)"
+    
+    # 2. Проверка цены
+    entry_price = queued_signal['entry_price']
+    price_diff_pct = abs(current_price - entry_price) / entry_price * 100
+    
+    if price_diff_pct > SIGNAL_PRICE_TOLERANCE:
+        return False, f"price_moved ({price_diff_pct:.1f}%)"
+    
+    return True, "valid"
+
+
+async def process_signal_queue(bot: Bot):
+    """Обработка очереди отложенных сигналов"""
+    global _signal_queue
+    
+    if not _signal_queue:
+        return
+    
+    # Сортируем по приоритету (RARE > HIGH > MEDIUM)
+    _signal_queue.sort(key=lambda x: SIGNAL_PRIORITY.get(x['type'], 0), reverse=True)
+    
+    new_queue = []
+    
+    for queued in _signal_queue:
+        signal_type = queued['type']
+        pair = queued['pair']
+        
+        # Проверяем можем ли отправить сейчас
+        can_send, reason = _can_send_signal(signal_type)
+        
+        if can_send:
+            # Получаем текущую цену для проверки актуальности
+            try:
+                from indicators import fetch_price
+                async with httpx.AsyncClient() as client:
+                    price_data = await fetch_price(client, pair)
+                    current_price = price_data[0] if price_data else queued['entry_price']
+            except:
+                current_price = queued['entry_price']
+            
+            # Проверяем актуальность
+            is_valid, valid_reason = _check_signal_still_valid(queued, current_price)
+            
+            if is_valid:
+                # Отправляем!
+                signal = queued['signal']
+                users = queued['users']
+                
+                signal_type_badge = "🔥 RARE" if signal_type == 'RARE' else "⚡ HIGH" if signal_type == 'HIGH' else "📊 MEDIUM"
+                
+                logger.info(f"📤 Sending queued signal: {pair} {signal_type_badge}")
+                
+                # Формируем сообщение
+                side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
+                text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+                text += "<b>Логика:</b>\n"
+                for reason_txt in signal['reasons'][:5]:
+                    text += f"• {reason_txt}\n"
+                text += "\n"
+                
+                entry_min, entry_max = signal['entry_zone']
+                text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n"
+                text += f"🎯 <b>Цели:</b>\n"
+                text += f"   TP1: {signal['take_profit_1']:.4f}\n"
+                text += f"   TP2: {signal['take_profit_2']:.4f}\n"
+                text += f"   TP3: {signal['take_profit_3']:.4f}\n"
+                text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
+                text += f"📊 <b>Confidence:</b> {signal_type_badge}\n\n"
+                text += "⚠️ <i>Не финансовый совет</i>"
+                
+                # Отправка
+                sent_count = 0
+                for user_id in users:
+                    success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                    if success:
+                        sent_count += 1
+                    await asyncio.sleep(BATCH_SEND_DELAY)
+                
+                if sent_count > 0:
+                    from database import log_signal
+                    await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
+                    LAST_SIGNALS[pair] = time.time()
+                    _record_signal(pair, signal_type, signal['side'], signal['confidence'])
+                    _increment_signal_count(signal_type)
+                    logger.info(f"✅ Sent queued {pair} ({signal_type_badge}) to {sent_count}/{len(users)} users")
+            else:
+                logger.info(f"🗑️ Removed from queue: {pair} - {valid_reason}")
+        else:
+            # Не можем отправить сейчас - оставляем в очереди
+            # Но проверяем не протух ли
+            age_minutes = (time.time() - queued['queued_at']) / 60
+            if age_minutes <= SIGNAL_QUEUE_TTL:
+                new_queue.append(queued)
+            else:
+                logger.info(f"🗑️ Expired in queue: {pair} (age: {age_minutes:.0f}min)")
+    
+    _signal_queue = new_queue
+
+
 def reset_daily_limits():
     """Принудительный сброс всех дневных лимитов (для админ команды)"""
-    global _daily_rare_count, _daily_high_count, _daily_medium_count
+    global _daily_rare_count, _daily_high_count, _daily_medium_count, _high_slots_used
     _daily_rare_count = 0
     _daily_high_count = 0
     _daily_medium_count = 0
+    _high_slots_used = {}
     logger.info("🔄 Daily limits reset by admin")
     return True
 
 
 def get_daily_limits_info() -> dict:
     """Получить текущие счётчики (для админ команды)"""
+    current_slot = _get_current_high_slot()
+    slots_info = []
+    for idx, (start, end) in enumerate(HIGH_TIME_SLOTS):
+        used = "✅" if _high_slots_used.get(idx, False) else "⏳" if idx == current_slot else "⬜"
+        slots_info.append(f"{used} {start}:00-{end}:00")
+    
     return {
         'rare': {'current': _daily_rare_count, 'max': MAX_RARE_SIGNALS_PER_DAY},
         'high': {'current': _daily_high_count, 'max': MAX_HIGH_SIGNALS_PER_DAY},
         'medium': {'current': _daily_medium_count, 'max': MAX_MEDIUM_SIGNALS_PER_DAY},
-        'cooldowns': len(_pair_last_signal)
+        'high_slots': slots_info,
+        'current_slot': current_slot,
+        'cooldowns': len(_pair_last_signal),
+        'queue_size': len(_signal_queue)
     }
 
 
@@ -302,23 +513,26 @@ async def signal_analyzer(bot: Bot):
                         continue
                     
                     # 2. Проверяем cooldown (с логикой upgrade)
-                    can_send, cooldown_reason = _check_cooldown(pair, signal_type, confidence_pct)
-                    if not can_send:
+                    can_send_cd, cooldown_reason = _check_cooldown(pair, signal_type, confidence_pct)
+                    if not can_send_cd:
                         logger.info(f"⏸️ {pair}: {cooldown_reason}")
                         pairs_skipped += 1
                         continue
                     
-                    # 3. Проверяем дневной лимит по типу
-                    if not _can_send_signal(signal_type):
-                        logger.info(f"⏸️ {pair}: daily_limit_reached for {signal_type}")
-                        pairs_skipped += 1
-                        continue
-                    
-                    # 4. Лимит на пару
+                    # 3. Лимит на пару
                     signals_today = await count_signals_today(pair)
                     if signals_today >= MAX_SIGNALS_PER_DAY:
                         logger.info(f"⏸️ {pair}: pair_limit_reached ({signals_today}/{MAX_SIGNALS_PER_DAY})")
                         pairs_skipped += 1
+                        continue
+                    
+                    # 4. Проверяем возможность отправки (лимит + окно + интервал)
+                    can_send, send_reason = _can_send_signal(signal_type)
+                    
+                    if not can_send:
+                        # Не можем отправить сейчас - добавляем в очередь
+                        logger.info(f"📥 {pair}: {send_reason} - adding to queue")
+                        _add_to_queue(signal, users, pair, signal_type)
                         continue
                     
                     # ✅ Все проверки пройдены - отправляем!
@@ -373,8 +587,12 @@ async def signal_analyzer(bot: Bot):
                         
                         logger.info(f"✅ Sent {pair} {signal['side']} ({type_badge}) to {sent_count}/{len(users)} users")
             
+            # Обработка очереди отложенных сигналов
+            await process_signal_queue(bot)
+            
             # Итог цикла
-            logger.info(f"[Cycle {cycle}] Analyzed: {pairs_analyzed}, Skipped: {pairs_skipped}, Signals: {signals_found}")
+            queue_size = len(_signal_queue)
+            logger.info(f"[Cycle {cycle}] Analyzed: {pairs_analyzed}, Skipped: {pairs_skipped}, Signals: {signals_found}, Queue: {queue_size}")
             
         except Exception as e:
             logger.error(f"Signal analyzer error: {e}", exc_info=True)
