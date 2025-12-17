@@ -193,7 +193,7 @@ class CryptoPayAPI:
 crypto_api = CryptoPayAPI()
 
 # ==================== HELPER FUNCTIONS ====================
-async def create_payment_invoice(user_id: int, plan_id: str, lang: str = "ru") -> Optional[Dict]:
+async def create_payment_invoice(user_id: int, plan_id: str, lang: str = "ru", discount_percent: int = 0) -> Optional[Dict]:
     """
     Создать инвойс для оплаты подписки
     
@@ -201,12 +201,14 @@ async def create_payment_invoice(user_id: int, plan_id: str, lang: str = "ru") -
         user_id: ID пользователя Telegram
         plan_id: ID тарифного плана (1m, 3m, 6m, 12m)
         lang: Язык (ru/en)
+        discount_percent: Скидка в процентах (0-100)
     
     Returns:
         {
             'invoice_id': 12345,
             'pay_url': 'https://t.me/CryptoBot?start=...',
-            'plan': {...}
+            'plan': {...},
+            'final_price': 15.00
         }
     """
     plan = SUBSCRIPTION_PLANS.get(plan_id)
@@ -214,19 +216,33 @@ async def create_payment_invoice(user_id: int, plan_id: str, lang: str = "ru") -
         logger.error(f"Invalid plan_id: {plan_id}")
         return None
     
+    # Рассчитываем цену со скидкой
+    original_price = plan["price"]
+    if discount_percent > 0:
+        final_price = original_price * (1 - discount_percent / 100)
+    else:
+        final_price = original_price
+    
+    # Округляем до 2 знаков
+    final_price = round(final_price, 2)
+    
     # Описание платежа
     if lang == "en":
         description = f"Alpha Entry Bot - {plan['name_en']}"
+        if discount_percent > 0:
+            description += f" (-{discount_percent}%)"
     else:
         description = f"Alpha Entry Bot - {plan['name']}"
+        if discount_percent > 0:
+            description += f" (-{discount_percent}%)"
     
     # Payload для идентификации платежа
     payload = f"{user_id}:{plan_id}"
     
     # Создаём инвойс
     invoice = await crypto_api.create_invoice(
-        amount=plan["price"],
-        currency="USDT",  # Можно добавить выбор валюты
+        amount=final_price,
+        currency="USDT",
         description=description,
         payload=payload,
         allow_comments=False,
@@ -235,6 +251,8 @@ async def create_payment_invoice(user_id: int, plan_id: str, lang: str = "ru") -
     
     if invoice:
         invoice["plan"] = plan
+        invoice["final_price"] = final_price
+        invoice["discount_percent"] = discount_percent
         return invoice
     
     return None
