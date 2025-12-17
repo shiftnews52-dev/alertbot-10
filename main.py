@@ -13,7 +13,7 @@ from database import init_db, close_db
 from handlers import setup_handlers
 from crypto_payment import handle_crypto_webhook
 # СИСТЕМА 2: Professional Analyzer
-from tasks import price_collector, signal_analyzer
+from tasks import price_collector, signal_analyzer, subscription_manager
 from pnl_tracker import pnl_tracker
 from pnl_tasks import track_signals_pnl
 
@@ -78,8 +78,6 @@ async def on_startup(dp):
     
     # Запускаем HTTP сервер для вебхуков
     app = web.Application()
-    
-    # Роуты
     app.router.add_post("/crypto_webhook", crypto_webhook_handler)
     app.router.add_get("/health", healthcheck_handler)
     app.router.add_get("/", healthcheck_handler)
@@ -126,6 +124,10 @@ async def main():
         # Запуск PnL трекера в фоне
         asyncio.create_task(track_signals_pnl(bot))
         logger.info("✅ PnL tracker started in background")
+        
+        # Запуск менеджера подписок (напоминания, промо)
+        asyncio.create_task(subscription_manager(bot))
+        logger.info("✅ Subscription manager started")
         
         # Запуск бота
         await dp.start_polling()
