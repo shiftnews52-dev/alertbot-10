@@ -100,6 +100,80 @@ async def show_payment_menu(message_or_call, is_callback=False):
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
+# ==================== МЕНЮ ПРОДЛЕНИЯ СО СКИДКОЙ 25% ====================
+async def show_renewal_menu(message_or_call, is_callback=False):
+    """Показать меню продления со скидкой 25%"""
+    if is_callback:
+        user_id = message_or_call.from_user.id
+        lang = await get_user_lang(user_id)
+        message = message_or_call.message
+    else:
+        user_id = message_or_call.from_user.id
+        lang = await get_user_lang(user_id)
+        message = message_or_call
+    
+    # Цены со скидкой 25%
+    prices = {
+        "1m": {"original": 20, "discounted": 15},
+        "3m": {"original": 50, "discounted": 37.5},
+        "6m": {"original": 90, "discounted": 67.5},
+        "12m": {"original": 140, "discounted": 105},
+    }
+    
+    if lang == "en":
+        text = "🎁 <b>SPECIAL RENEWAL OFFER!</b>\n\n"
+        text += "You get <b>25% OFF</b> on any plan 🔥\n\n"
+        text += "📊 <b>DISCOUNTED PRICES:</b>\n\n"
+        text += f"🗓 <b>1 month</b>\n"
+        text += f"   <s>${prices['1m']['original']}</s> → <b>${prices['1m']['discounted']:.0f}</b>\n\n"
+        text += f"🗓 <b>3 months</b>\n"
+        text += f"   <s>${prices['3m']['original']}</s> → <b>${prices['3m']['discounted']:.1f}</b>\n\n"
+        text += f"🗓 <b>6 months</b>\n"
+        text += f"   <s>${prices['6m']['original']}</s> → <b>${prices['6m']['discounted']:.1f}</b>\n\n"
+        text += f"👑 <b>12 months</b>\n"
+        text += f"   <s>${prices['12m']['original']}</s> → <b>${prices['12m']['discounted']:.0f}</b>\n\n"
+        text += "⏰ <i>Limited time offer!</i>"
+    else:
+        text = "🎁 <b>СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ!</b>\n\n"
+        text += "Скидка <b>25%</b> на любой тариф 🔥\n\n"
+        text += "📊 <b>ЦЕНЫ СО СКИДКОЙ:</b>\n\n"
+        text += f"🗓 <b>1 месяц</b>\n"
+        text += f"   <s>${prices['1m']['original']}</s> → <b>${prices['1m']['discounted']:.0f}</b>\n\n"
+        text += f"🗓 <b>3 месяца</b>\n"
+        text += f"   <s>${prices['3m']['original']}</s> → <b>${prices['3m']['discounted']:.1f}</b>\n\n"
+        text += f"🗓 <b>6 месяцев</b>\n"
+        text += f"   <s>${prices['6m']['original']}</s> → <b>${prices['6m']['discounted']:.1f}</b>\n\n"
+        text += f"👑 <b>12 месяцев</b>\n"
+        text += f"   <s>${prices['12m']['original']}</s> → <b>${prices['12m']['discounted']:.0f}</b>\n\n"
+        text += "⏰ <i>Предложение ограничено!</i>"
+    
+    # Кнопки со скидкой
+    kb = InlineKeyboardMarkup(row_width=1)
+    
+    if lang == "en":
+        kb.add(InlineKeyboardButton(f"🗓 1 month — ${prices['1m']['discounted']:.0f}", callback_data="renew_1m"))
+        kb.add(InlineKeyboardButton(f"🗓 3 months — ${prices['3m']['discounted']:.1f}", callback_data="renew_3m"))
+        kb.add(InlineKeyboardButton(f"🗓 6 months — ${prices['6m']['discounted']:.1f}", callback_data="renew_6m"))
+        kb.add(InlineKeyboardButton(f"👑 12 months — ${prices['12m']['discounted']:.0f}", callback_data="renew_12m"))
+        kb.add(InlineKeyboardButton("⬅️ Back", callback_data="back_main"))
+    else:
+        kb.add(InlineKeyboardButton(f"🗓 1 месяц — ${prices['1m']['discounted']:.0f}", callback_data="renew_1m"))
+        kb.add(InlineKeyboardButton(f"🗓 3 месяца — ${prices['3m']['discounted']:.1f}", callback_data="renew_3m"))
+        kb.add(InlineKeyboardButton(f"🗓 6 месяцев — ${prices['6m']['discounted']:.1f}", callback_data="renew_6m"))
+        kb.add(InlineKeyboardButton(f"👑 12 месяцев — ${prices['12m']['discounted']:.0f}", callback_data="renew_12m"))
+        kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_main"))
+    
+    # Отправляем
+    if is_callback:
+        try:
+            await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except:
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        await message_or_call.answer()
+    else:
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
 # ==================== ОБРАБОТКА ВЫБОРА ПЛАНА ====================
 async def handle_plan_selection(call: types.CallbackQuery):
     """Обработка выбора тарифного плана"""
@@ -206,10 +280,10 @@ async def handle_payment_check(call: types.CallbackQuery):
             await grant_access(user_id, days)
             logger.info(f"✅ Access granted: user={user_id}, days={days}")
             
-            # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС (50%)
+            # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС ($10 за приглашённого)
             referrer_id = await get_referrer(user_id)
             if referrer_id:
-                bonus = price * 0.5  # 50% от платежа
+                bonus = 10.0  # Фиксированные $10 за приглашённого
                 await add_referral_bonus(referrer_id, bonus, user_id)
                 logger.info(f"💰 Referral bonus: {referrer_id} got ${bonus:.2f} from {user_id}")
             
@@ -239,3 +313,69 @@ async def handle_payment_check(call: types.CallbackQuery):
         # Ошибка или expired
         text = "❌ Invoice expired or error.\n\nCreate new payment." if lang == "en" else "❌ Инвойс истёк или ошибка.\n\nСоздайте новый платёж."
         await call.answer(text, show_alert=True)
+
+
+# ==================== ОБРАБОТКА ПРОДЛЕНИЯ СО СКИДКОЙ ====================
+async def handle_renewal_selection(call: types.CallbackQuery):
+    """Обработка выбора плана со скидкой 25%"""
+    from config import RENEWAL_DISCOUNT_PERCENT
+    
+    user_id = call.from_user.id
+    lang = await get_user_lang(user_id)
+    
+    # Парсим plan_id из callback_data (renew_1m -> 1m)
+    plan_id = call.data.split("_")[1]
+    
+    # Создаём инвойс со скидкой
+    invoice = await create_payment_invoice(user_id, plan_id, lang, discount_percent=RENEWAL_DISCOUNT_PERCENT)
+    
+    if not invoice:
+        error_text = "❌ Payment error. Try again later." if lang == "en" else "❌ Ошибка создания платежа. Попробуй позже."
+        await call.answer(error_text, show_alert=True)
+        return
+    
+    plan = invoice["plan"]
+    pay_url = invoice["pay_url"]
+    final_price = invoice.get("final_price", plan["price"])
+    original_price = plan["price"]
+    
+    # Формируем сообщение
+    if lang == "en":
+        text = f"🎁 <b>RENEWAL WITH DISCOUNT</b>\n\n"
+        text += f"📦 Plan: {plan['name_en']}\n"
+        text += f"💰 Original: <s>${original_price:.2f}</s>\n"
+        text += f"🔥 Your price: <b>${final_price:.2f}</b>\n"
+        text += f"💎 You save: ${original_price - final_price:.2f} ({RENEWAL_DISCOUNT_PERCENT}%)\n"
+        text += f"⏱ Duration: {plan['duration_days']} days\n\n"
+        text += f"💳 <b>Payment methods:</b>\n"
+        text += f"USDT • TON • BTC • ETH • and more\n\n"
+        text += f"🔒 Secure payment via @CryptoBot\n\n"
+        text += f"Click the button below to pay:"
+    else:
+        text = f"🎁 <b>ПРОДЛЕНИЕ СО СКИДКОЙ</b>\n\n"
+        text += f"📦 Тариф: {plan['name']}\n"
+        text += f"💰 Было: <s>${original_price:.2f}</s>\n"
+        text += f"🔥 Твоя цена: <b>${final_price:.2f}</b>\n"
+        text += f"💎 Экономия: ${original_price - final_price:.2f} ({RENEWAL_DISCOUNT_PERCENT}%)\n"
+        text += f"⏱ Длительность: {plan['duration_days']} дней\n\n"
+        text += f"💳 <b>Способы оплаты:</b>\n"
+        text += f"USDT • TON • BTC • ETH • и другие\n\n"
+        text += f"🔒 Безопасная оплата через @CryptoBot\n\n"
+        text += f"Нажми кнопку ниже для оплаты:"
+    
+    # Кнопки
+    kb = InlineKeyboardMarkup()
+    pay_btn_text = "💳 Pay Now" if lang == "en" else "💳 Оплатить"
+    kb.add(InlineKeyboardButton(pay_btn_text, url=pay_url))
+    
+    check_btn_text = "✅ I Paid" if lang == "en" else "✅ Я оплатил"
+    kb.add(InlineKeyboardButton(check_btn_text, callback_data=f"check_{invoice['invoice_id']}_{plan_id}"))
+    
+    back_text = "⬅️ Back" if lang == "en" else "⬅️ Назад"
+    kb.add(InlineKeyboardButton(back_text, callback_data="renew_discount"))
+    
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except:
+        await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await call.answer()
