@@ -599,3 +599,123 @@ async def signal_analyzer(bot: Bot):
         
         # Пауза между циклами
         await asyncio.sleep(60)
+
+
+async def subscription_manager(bot: Bot):
+    """
+    Фоновая задача для управления подписками:
+    - Очистка истёкших подписок
+    - Напоминания за 2 дня
+    - Уведомления об истечении
+    - Промо для неподписанных
+    """
+    from config import (
+        REMINDER_DAYS_BEFORE, PROMO_INTERVAL_HOURS, 
+        NOTIFICATION_HOUR_UTC
+    )
+    from database import (
+        get_users_expiring_soon, mark_reminder_sent,
+        get_expired_subscriptions, expire_subscription,
+        get_users_for_promo, update_promo_sent,
+        get_all_expired_to_cleanup, get_user_lang
+    )
+    from promo_messages import (
+        get_reminder_2_days, get_expired_message, 
+        get_promo_hook, get_promo_count
+    )
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    logger.info("📧 Subscription Manager started")
+    
+    # Ждём инициализации
+    await asyncio.sleep(60)
+    
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            current_hour = now.hour
+            
+            # ==================== 1. ОЧИСТКА ИСТЁКШИХ ====================
+            expired_ids = await get_all_expired_to_cleanup()
+            if expired_ids:
+                logger.info(f"🧹 Cleaning up {len(expired_ids)} expired subscriptions")
+                for user_id in expired_ids:
+                    await expire_subscription(user_id)
+            
+            # Остальные действия только в определённое время (не спамим ночью)
+            if current_hour == NOTIFICATION_HOUR_UTC:
+                
+                # ==================== 2. НАПОМИНАНИЯ ЗА 2 ДНЯ ====================
+                expiring_users = await get_users_expiring_soon(REMINDER_DAYS_BEFORE)
+                if expiring_users:
+                    logger.info(f"⏰ Sending {len(expiring_users)} expiry reminders")
+                    
+                    for user in expiring_users:
+                        try:
+                            text = get_reminder_2_days(user["lang"])
+                            
+                            # Кнопка продления со скидкой
+                            kb = InlineKeyboardMarkup()
+                            btn_text = "🎁 Продлить -25%" if user["lang"] == "ru" else "🎁 Renew -25%"
+                            kb.add(InlineKeyboardButton(btn_text, callback_data="renew_discount"))
+                            
+                            await bot.send_message(user["user_id"], text, reply_markup=kb, parse_mode="HTML")
+                            await mark_reminder_sent(user["user_id"])
+                            await asyncio.sleep(0.1)
+                            
+                            logger.info(f"📧 Reminder sent to {user['user_id']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send reminder to {user['user_id']}: {e}")
+                
+                # ==================== 3. УВЕДОМЛЕНИЯ ОБ ИСТЕЧЕНИИ ====================
+                expired_users = await get_expired_subscriptions()
+                if expired_users:
+                    logger.info(f"❌ Sending {len(expired_users)} expiry notifications")
+                    
+                    for user in expired_users:
+                        try:
+                            text = get_expired_message(user["lang"])
+                            
+                            kb = InlineKeyboardMarkup()
+                            btn_text = "🎁 Продлить -25%" if user["lang"] == "ru" else "🎁 Renew -25%"
+                            kb.add(InlineKeyboardButton(btn_text, callback_data="renew_discount"))
+                            
+                            await bot.send_message(user["user_id"], text, reply_markup=kb, parse_mode="HTML")
+                            await expire_subscription(user["user_id"])
+                            await asyncio.sleep(0.1)
+                            
+                            logger.info(f"📧 Expiry notification sent to {user['user_id']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send expiry notification to {user['user_id']}: {e}")
+                
+                # ==================== 4. ПРОМО ДЛЯ НЕПОДПИСАННЫХ ====================
+                promo_users = await get_users_for_promo(PROMO_INTERVAL_HOURS)
+                promo_count = get_promo_count()
+                
+                if promo_users:
+                    logger.info(f"💰 Sending promo to {len(promo_users)} users")
+                    
+                    for user in promo_users:
+                        try:
+                            # Следующий индекс (циклически)
+                            next_index = (user["last_index"] + 1) % promo_count
+                            text, _ = get_promo_hook(user["lang"], next_index)
+                            
+                            kb = InlineKeyboardMarkup()
+                            btn_text = "🚀 Подписаться" if user["lang"] == "ru" else "🚀 Subscribe"
+                            kb.add(InlineKeyboardButton(btn_text, callback_data="show_pricing"))
+                            
+                            await bot.send_message(user["user_id"], text, reply_markup=kb, parse_mode="HTML")
+                            await update_promo_sent(user["user_id"], next_index)
+                            await asyncio.sleep(0.1)
+                            
+                            logger.info(f"📧 Promo #{next_index} sent to {user['user_id']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send promo to {user['user_id']}: {e}")
+            
+            # Проверяем раз в час
+            await asyncio.sleep(3600)
+            
+        except Exception as e:
+            logger.error(f"Subscription manager error: {e}", exc_info=True)
+            await asyncio.sleep(300)
