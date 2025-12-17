@@ -146,6 +146,21 @@ async def init_db():
         except:
             pass  # Колонка уже существует
         
+        # Миграция: промо-система
+        migrations = [
+            ("was_subscriber", "INTEGER DEFAULT 0"),  # Был ли когда-то подписчиком
+            ("last_promo_at", "INTEGER DEFAULT 0"),   # Когда отправляли промо
+            ("last_promo_index", "INTEGER DEFAULT 0"), # Какой индекс промо
+            ("reminder_2d_sent", "INTEGER DEFAULT 0"), # Отправлено ли напоминание за 2 дня
+        ]
+        
+        for col_name, col_type in migrations:
+            try:
+                await conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                logger.info(f"Added {col_name} column to users table")
+            except:
+                pass  # Колонка уже существует
+        
         await conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:
@@ -954,5 +969,169 @@ async def reset_referral_balance(user_id: int) -> float:
         
         logger.info(f"Referral balance reset: user {user_id}, was ${old_balance:.2f}")
         return old_balance
+    finally:
+        await db_pool.release(conn)
+
+
+# ==================== ПРОМО-СИСТЕМА ====================
+
+async def get_users_expiring_soon(days_before: int = 2) -> list:
+    """
+    Получить пользователей у которых подписка истекает через N дней
+    И им ещё не отправляли напоминание
+    """
+    conn = await db_pool.acquire()
+    try:
+        now_ts = int(datetime.now().timestamp())
+        target_ts = now_ts + (days_before * 24 * 3600)
+        # Окно: от now до target_ts (т.е. истекает в ближайшие N дней)
+        
+        cursor = await conn.execute("""
+            SELECT id, username, language, subscription_expiry 
+            FROM users 
+            WHERE paid = 1 
+              AND subscription_expiry IS NOT NULL
+              AND subscription_expiry > ?
+              AND subscription_expiry <= ?
+              AND (reminder_2d_sent IS NULL OR reminder_2d_sent = 0)
+        """, (now_ts, target_ts))
+        
+        rows = await cursor.fetchall()
+        return [{"user_id": r[0], "username": r[1], "lang": r[2] or "ru", "expiry": r[3]} for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def mark_reminder_sent(user_id: int):
+    """Пометить что напоминание отправлено"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "UPDATE users SET reminder_2d_sent = 1 WHERE id = ?", 
+            (user_id,)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_expired_subscriptions() -> list:
+    """Получить пользователей с только что истёкшей подпиской (для уведомления)"""
+    conn = await db_pool.acquire()
+    try:
+        now_ts = int(datetime.now().timestamp())
+        # Истёк в последние 24 часа и ещё paid=1 (не обработан)
+        day_ago = now_ts - (24 * 3600)
+        
+        cursor = await conn.execute("""
+            SELECT id, username, language, subscription_expiry 
+            FROM users 
+            WHERE paid = 1 
+              AND subscription_expiry IS NOT NULL
+              AND subscription_expiry < ?
+              AND subscription_expiry > ?
+        """, (now_ts, day_ago))
+        
+        rows = await cursor.fetchall()
+        return [{"user_id": r[0], "username": r[1], "lang": r[2] or "ru", "expiry": r[3]} for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def expire_subscription(user_id: int):
+    """
+    Истечь подписку: 
+    - paid = 0
+    - was_subscriber = 1 (для скидки на продление)
+    - reminder_2d_sent = 0 (сброс для будущего)
+    """
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute("""
+            UPDATE users SET 
+                paid = 0, 
+                was_subscriber = 1,
+                reminder_2d_sent = 0
+            WHERE id = ?
+        """, (user_id,))
+        await conn.commit()
+        logger.info(f"Subscription expired for user {user_id}")
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_users_for_promo(interval_hours: int = 48) -> list:
+    """
+    Получить неподписанных пользователей для промо
+    Которым не отправляли сообщение последние N часов
+    """
+    conn = await db_pool.acquire()
+    try:
+        now_ts = int(datetime.now().timestamp())
+        min_last_promo = now_ts - (interval_hours * 3600)
+        
+        cursor = await conn.execute("""
+            SELECT id, username, language, last_promo_index
+            FROM users 
+            WHERE paid = 0
+              AND (last_promo_at IS NULL OR last_promo_at < ?)
+        """, (min_last_promo,))
+        
+        rows = await cursor.fetchall()
+        return [{
+            "user_id": r[0], 
+            "username": r[1], 
+            "lang": r[2] or "ru",
+            "last_index": r[3] or 0
+        } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def update_promo_sent(user_id: int, promo_index: int):
+    """Обновить статус отправки промо"""
+    conn = await db_pool.acquire()
+    try:
+        now_ts = int(datetime.now().timestamp())
+        await conn.execute("""
+            UPDATE users SET 
+                last_promo_at = ?,
+                last_promo_index = ?
+            WHERE id = ?
+        """, (now_ts, promo_index, user_id))
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def was_subscriber(user_id: int) -> bool:
+    """Проверить был ли пользователь когда-то подписчиком (для скидки)"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT was_subscriber FROM users WHERE id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        return bool(row and row[0])
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_all_expired_to_cleanup() -> list:
+    """Получить всех с истёкшей подпиской для фоновой очистки"""
+    conn = await db_pool.acquire()
+    try:
+        now_ts = int(datetime.now().timestamp())
+        
+        cursor = await conn.execute("""
+            SELECT id FROM users 
+            WHERE paid = 1 
+              AND subscription_expiry IS NOT NULL
+              AND subscription_expiry < ?
+        """, (now_ts,))
+        
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
     finally:
         await db_pool.release(conn)
