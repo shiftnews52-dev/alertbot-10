@@ -25,6 +25,7 @@ from database import (
 # Импорты для платежей
 from payment_handlers import (
     show_payment_menu,
+    show_renewal_menu,
     handle_plan_selection,
     handle_payment_check
 )
@@ -390,6 +391,21 @@ async def handle_callbacks(call: types.CallbackQuery):
     
     if data.startswith("check_"):
         await handle_payment_check(call)
+        return
+    
+    # ===== ПРОДЛЕНИЕ СО СКИДКОЙ =====
+    if data == "renew_discount":
+        await show_renewal_menu(call, is_callback=True)
+        return
+    
+    if data == "show_pricing":
+        await show_payment_menu(call, is_callback=True)
+        return
+    
+    if data.startswith("renew_"):
+        # renew_1m, renew_3m, etc - со скидкой 25%
+        from payment_handlers import handle_renewal_selection
+        await handle_renewal_selection(call)
         return
     
     # ===== АДМИН =====
