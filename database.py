@@ -1135,3 +1135,33 @@ async def get_all_expired_to_cleanup() -> list:
         return [r[0] for r in rows]
     finally:
         await db_pool.release(conn)
+
+
+async def get_paid_users_list() -> list:
+    """Получить список всех платных пользователей с username и ID"""
+    conn = await db_pool.acquire()
+    try:
+        now_ts = int(datetime.now().timestamp())
+        
+        cursor = await conn.execute("""
+            SELECT id, username, subscription_expiry 
+            FROM users 
+            WHERE paid = 1 
+              AND (subscription_expiry IS NULL OR subscription_expiry > ?)
+            ORDER BY subscription_expiry DESC
+        """, (now_ts,))
+        
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            days_left = None
+            if r[2]:
+                days_left = max(0, (r[2] - now_ts) // 86400)
+            result.append({
+                "user_id": r[0],
+                "username": r[1],
+                "days_left": days_left
+            })
+        return result
+    finally:
+        await db_pool.release(conn)
