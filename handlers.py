@@ -501,6 +501,54 @@ async def handle_callbacks(call: types.CallbackQuery):
             await delete_and_send(call.message, text, kb)
         return
     
+    if data == "admin_subscribers" or data.startswith("admin_subs_page_"):
+        if user_id in ADMIN_IDS:
+            from database import get_paid_users_list
+            
+            # Определяем страницу
+            if data.startswith("admin_subs_page_"):
+                page = int(data.split("_")[-1])
+            else:
+                page = 0
+            
+            per_page = 20
+            users = await get_paid_users_list()
+            total = len(users)
+            total_pages = (total + per_page - 1) // per_page  # Округление вверх
+            
+            # Срез для текущей страницы
+            start = page * per_page
+            end = start + per_page
+            page_users = users[start:end]
+            
+            text = f"💎 <b>ПОДПИСЧИКИ</b> ({total})\n"
+            text += f"📄 Страница {page + 1}/{max(1, total_pages)}\n\n"
+            
+            if not page_users:
+                text += "Пока нет подписчиков"
+            else:
+                for u in page_users:
+                    uname = f"@{u['username']}" if u.get('username') else "—"
+                    days = f"{u['days_left']}д" if u['days_left'] is not None else "∞"
+                    text += f"<code>{u['user_id']}</code> | {uname} | {days}\n"
+            
+            kb = InlineKeyboardMarkup(row_width=2)
+            
+            # Кнопки навигации
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"admin_subs_page_{page - 1}"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"admin_subs_page_{page + 1}"))
+            
+            if nav_buttons:
+                kb.add(*nav_buttons)
+            
+            kb.add(InlineKeyboardButton("🔙 В админку", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
     if data == "admin_limits":
         if user_id in ADMIN_IDS:
             from tasks import get_daily_limits_info
@@ -800,6 +848,7 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
         InlineKeyboardButton("📊 Лимиты", callback_data="admin_limits")
     )
     kb.add(
+        InlineKeyboardButton("💎 Подписчики", callback_data="admin_subscribers"),
         InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")
     )
     
