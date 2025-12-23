@@ -179,7 +179,7 @@ REFERRAL_BONUS_MANAGER = 3.0     # Manager (привёл партнёра) по�
 RENEWAL_BONUS_PARTNER = 0.0      # 0 за продление
 RENEWAL_BONUS_MANAGER = 0.0      # 0 за продление
 
-MIN_WITHDRAWAL = 10.0            # Минимум для вывода
+MIN_WITHDRAWAL = 20.0            # Минимум для вывода
 
 # ==================== STARTUP INFO ====================
 print(f"✅ Config loaded (RARE/HIGH/MEDIUM + Time Distribution):")
