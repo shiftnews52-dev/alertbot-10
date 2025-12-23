@@ -139,6 +139,19 @@ async def init_db():
     try:
         await conn.executescript(INIT_SQL)
         
+        # Таблица менеджеров
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS managers (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                telegram_id INTEGER,
+                balance REAL DEFAULT 0,
+                partners_count INTEGER DEFAULT 0,
+                conversions INTEGER DEFAULT 0,
+                created_ts INTEGER
+            )
+        """)
+        
         # Миграция: добавляем колонку username если нет
         try:
             await conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
@@ -146,12 +159,15 @@ async def init_db():
         except:
             pass  # Колонка уже существует
         
-        # Миграция: промо-система
+        # Миграция: промо-система и реф-система
         migrations = [
-            ("was_subscriber", "INTEGER DEFAULT 0"),  # Был ли когда-то подписчиком
-            ("last_promo_at", "INTEGER DEFAULT 0"),   # Когда отправляли промо
-            ("last_promo_index", "INTEGER DEFAULT 0"), # Какой индекс промо
-            ("reminder_2d_sent", "INTEGER DEFAULT 0"), # Отправлено ли напоминание за 2 дня
+            ("was_subscriber", "INTEGER DEFAULT 0"),
+            ("last_promo_at", "INTEGER DEFAULT 0"),
+            ("last_promo_index", "INTEGER DEFAULT 0"),
+            ("reminder_2d_sent", "INTEGER DEFAULT 0"),
+            ("role", "TEXT DEFAULT 'user'"),
+            ("manager_id", "TEXT"),  # Теперь хранит CODE менеджера, не ID
+            ("first_payment_done", "INTEGER DEFAULT 0"),
         ]
         
         for col_name, col_type in migrations:
@@ -159,7 +175,7 @@ async def init_db():
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
                 logger.info(f"Added {col_name} column to users table")
             except:
-                pass  # Колонка уже существует
+                pass
         
         await conn.commit()
         logger.info("Database initialized successfully")
@@ -1163,5 +1179,394 @@ async def get_paid_users_list() -> list:
                 "days_left": days_left
             })
         return result
+    finally:
+        await db_pool.release(conn)
+
+
+# ==================== ТРЁХУРОВНЕВАЯ РЕФЕРАЛЬНАЯ СИСТЕМА ====================
+# Manager → Partner → User
+# При первой оплате: Partner +$10, Manager +$3
+
+# Таблица менеджеров (создаётся при init_db)
+MANAGERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS managers (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    telegram_id INTEGER,
+    balance REAL DEFAULT 0,
+    partners_count INTEGER DEFAULT 0,
+    conversions INTEGER DEFAULT 0,
+    created_ts INTEGER
+);
+"""
+
+
+async def init_managers_table():
+    """Создать таблицу менеджеров если не существует"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(MANAGERS_TABLE_SQL)
+        await conn.commit()
+        logger.info("Managers table initialized")
+    finally:
+        await db_pool.release(conn)
+
+
+async def create_manager(code: str, name: str = None, telegram_id: int = None) -> bool:
+    """
+    Создать нового менеджера по коду
+    
+    Args:
+        code: Уникальный код (например: 'john', 'channel1', 'promo2024')
+        name: Имя/описание менеджера
+        telegram_id: Telegram ID (опционально, можно привязать позже)
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Проверяем что код не занят
+        cursor = await conn.execute("SELECT code FROM managers WHERE code = ?", (code,))
+        if await cursor.fetchone():
+            return False
+        
+        created_ts = int(datetime.now().timestamp())
+        await conn.execute(
+            "INSERT INTO managers (code, name, telegram_id, created_ts) VALUES (?, ?, ?, ?)",
+            (code, name, telegram_id, created_ts)
+        )
+        await conn.commit()
+        logger.info(f"Manager created: code={code}, name={name}, tg_id={telegram_id}")
+        return True
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_manager_by_code(code: str) -> dict:
+    """Получить менеджера по коду"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT code, name, telegram_id, balance, partners_count, conversions FROM managers WHERE code = ?",
+            (code,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                "code": row[0],
+                "name": row[1],
+                "telegram_id": row[2],
+                "balance": row[3] or 0,
+                "partners_count": row[4] or 0,
+                "conversions": row[5] or 0
+            }
+        return None
+    finally:
+        await db_pool.release(conn)
+
+
+async def link_manager_telegram(code: str, telegram_id: int) -> bool:
+    """Привязать Telegram ID к менеджеру"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "UPDATE managers SET telegram_id = ? WHERE code = ?",
+            (telegram_id, code)
+        )
+        await conn.commit()
+        return True
+    finally:
+        await db_pool.release(conn)
+
+
+async def add_manager_bonus(code: str, amount: float):
+    """Начислить бонус менеджеру"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "UPDATE managers SET balance = balance + ?, conversions = conversions + 1 WHERE code = ?",
+            (amount, code)
+        )
+        await conn.commit()
+        logger.info(f"Manager {code} got ${amount:.2f} bonus")
+    finally:
+        await db_pool.release(conn)
+
+
+async def increment_manager_partners(code: str):
+    """Увеличить счётчик партнёров менеджера"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "UPDATE managers SET partners_count = partners_count + 1 WHERE code = ?",
+            (code,)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_all_managers() -> list:
+    """Получить список всех менеджеров"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            SELECT code, name, telegram_id, balance, partners_count, conversions 
+            FROM managers 
+            ORDER BY balance DESC
+        """)
+        rows = await cursor.fetchall()
+        return [{
+            "code": r[0],
+            "name": r[1],
+            "telegram_id": r[2],
+            "balance": r[3] or 0,
+            "partners_count": r[4] or 0,
+            "conversions": r[5] or 0
+        } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def delete_manager(code: str) -> bool:
+    """Удалить менеджера"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute("DELETE FROM managers WHERE code = ?", (code,))
+        await conn.commit()
+        return True
+    finally:
+        await db_pool.release(conn)
+
+
+async def reset_manager_balance(code: str) -> float:
+    """Сбросить баланс менеджера (после выплаты)"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT balance FROM managers WHERE code = ?", (code,))
+        row = await cursor.fetchone()
+        old_balance = row[0] if row else 0
+        
+        await conn.execute("UPDATE managers SET balance = 0 WHERE code = ?", (code,))
+        await conn.commit()
+        return old_balance
+    finally:
+        await db_pool.release(conn)
+
+
+async def set_user_role(user_id: int, role: str, manager_code: str = None):
+    """Установить роль пользователя (user/partner/manager)"""
+    conn = await db_pool.acquire()
+    try:
+        if manager_code:
+            await conn.execute(
+                "UPDATE users SET role = ?, manager_id = ? WHERE id = ?",
+                (role, manager_code, user_id)  # manager_id теперь хранит CODE, не ID
+            )
+        else:
+            await conn.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (role, user_id)
+            )
+        await conn.commit()
+        logger.info(f"User {user_id} role set to {role}" + (f" (manager: {manager_code})" if manager_code else ""))
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_user_role(user_id: int) -> str:
+    """Получить роль пользователя"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT role FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else "user"
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_user_manager(user_id: int) -> str:
+    """Получить код менеджера партнёра"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT manager_id FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None  # Возвращает CODE
+    finally:
+        await db_pool.release(conn)
+
+
+async def is_first_payment(user_id: int) -> bool:
+    """Проверить, это первая оплата пользователя?"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT first_payment_done FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return not (row and row[0] == 1)
+    finally:
+        await db_pool.release(conn)
+
+
+async def mark_first_payment_done(user_id: int):
+    """Отметить что первая оплата сделана"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(
+            "UPDATE users SET first_payment_done = 1 WHERE id = ?", (user_id,)
+        )
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def process_referral_payment(user_id: int) -> dict:
+    """
+    Обработать реферальный платёж при ПЕРВОЙ оплате
+    
+    Returns:
+        {
+            'partner_id': ID партнёра или None,
+            'partner_bonus': сумма партнёру ($10 или 0),
+            'manager_code': код менеджера или None,
+            'manager_bonus': сумма менеджеру ($3 или 0),
+            'is_first': была ли это первая оплата
+        }
+    """
+    result = {
+        'partner_id': None,
+        'partner_bonus': 0,
+        'manager_code': None,
+        'manager_bonus': 0,
+        'is_first': False
+    }
+    
+    # Проверяем первая ли это оплата
+    if not await is_first_payment(user_id):
+        logger.info(f"User {user_id}: renewal payment, no referral bonuses")
+        return result
+    
+    result['is_first'] = True
+    
+    # Получаем кто пригласил (partner)
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT invited_by FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        partner_id = row[0] if row and row[0] else None
+    finally:
+        await db_pool.release(conn)
+    
+    if not partner_id:
+        logger.info(f"User {user_id}: no referrer")
+        await mark_first_payment_done(user_id)
+        return result
+    
+    result['partner_id'] = partner_id
+    
+    # Начисляем партнёру $10
+    await add_referral_bonus(partner_id, 10.0, user_id)
+    result['partner_bonus'] = 10.0
+    logger.info(f"Partner {partner_id} gets $10 for user {user_id}")
+    
+    # Получаем код менеджера партнёра
+    manager_code = await get_user_manager(partner_id)
+    
+    if manager_code:
+        result['manager_code'] = manager_code
+        # Начисляем менеджеру $3 через таблицу managers
+        await add_manager_bonus(manager_code, 3.0)
+        result['manager_bonus'] = 3.0
+        logger.info(f"Manager '{manager_code}' gets $3 for user {user_id}")
+    
+    # Отмечаем первую оплату
+    await mark_first_payment_done(user_id)
+    
+    return result
+    await mark_first_payment_done(user_id)
+    
+    return result
+
+
+async def get_partners_list(manager_code: str = None) -> list:
+    """Получить список партнёров (опционально фильтр по коду менеджера)"""
+    conn = await db_pool.acquire()
+    try:
+        if manager_code:
+            cursor = await conn.execute("""
+                SELECT u.id, u.username, u.balance,
+                       (SELECT COUNT(*) FROM users WHERE invited_by = u.id) as referrals,
+                       (SELECT COUNT(*) FROM users WHERE invited_by = u.id AND first_payment_done = 1) as paid_referrals
+                FROM users u
+                WHERE u.role = 'partner' AND u.manager_id = ?
+                ORDER BY u.balance DESC
+            """, (manager_code,))
+        else:
+            cursor = await conn.execute("""
+                SELECT u.id, u.username, u.balance, u.manager_id,
+                       (SELECT COUNT(*) FROM users WHERE invited_by = u.id) as referrals,
+                       (SELECT COUNT(*) FROM users WHERE invited_by = u.id AND first_payment_done = 1) as paid_referrals
+                FROM users u
+                WHERE u.role = 'partner'
+                ORDER BY u.balance DESC
+            """)
+        
+        rows = await cursor.fetchall()
+        
+        if manager_code:
+            return [{
+                "user_id": r[0],
+                "username": r[1],
+                "balance": r[2] or 0,
+                "referrals": r[3],
+                "paid_referrals": r[4]
+            } for r in rows]
+        else:
+            return [{
+                "user_id": r[0],
+                "username": r[1],
+                "balance": r[2] or 0,
+                "manager_code": r[3],  # Это CODE
+                "referrals": r[4],
+                "paid_referrals": r[5]
+            } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_referral_stats_full() -> dict:
+    """Полная статистика по реферальной системе"""
+    conn = await db_pool.acquire()
+    try:
+        # Менеджеры
+        cursor = await conn.execute("SELECT COUNT(*) FROM users WHERE role = 'manager'")
+        managers_count = (await cursor.fetchone())[0]
+        
+        # Партнёры
+        cursor = await conn.execute("SELECT COUNT(*) FROM users WHERE role = 'partner'")
+        partners_count = (await cursor.fetchone())[0]
+        
+        # Общий баланс к выплате
+        cursor = await conn.execute("SELECT SUM(balance) FROM users WHERE balance > 0")
+        total_pending = (await cursor.fetchone())[0] or 0
+        
+        # Конверсии (первые оплаты через рефералов)
+        cursor = await conn.execute("""
+            SELECT COUNT(*) FROM users 
+            WHERE first_payment_done = 1 AND invited_by IS NOT NULL
+        """)
+        total_conversions = (await cursor.fetchone())[0]
+        
+        return {
+            "managers_count": managers_count,
+            "partners_count": partners_count,
+            "total_pending": total_pending,
+            "total_conversions": total_conversions
+        }
     finally:
         await db_pool.release(conn)
