@@ -248,7 +248,7 @@ async def handle_plan_selection(call: types.CallbackQuery):
 # ==================== ПРОВЕРКА ОПЛАТЫ ====================
 async def handle_payment_check(call: types.CallbackQuery):
     """Проверить статус оплаты"""
-    from database import grant_access, get_referrer, add_referral_bonus
+    from database import grant_access
     
     user_id = call.from_user.id
     lang = await get_user_lang(user_id)
@@ -280,12 +280,19 @@ async def handle_payment_check(call: types.CallbackQuery):
             await grant_access(user_id, days)
             logger.info(f"✅ Access granted: user={user_id}, days={days}")
             
-            # НАЧИСЛЯЕМ РЕФЕРАЛЬНЫЙ БОНУС ($10 за приглашённого)
-            referrer_id = await get_referrer(user_id)
-            if referrer_id:
-                bonus = 10.0  # Фиксированные $10 за приглашённого
-                await add_referral_bonus(referrer_id, bonus, user_id)
-                logger.info(f"💰 Referral bonus: {referrer_id} got ${bonus:.2f} from {user_id}")
+            # ТРЁХУРОВНЕВАЯ РЕФЕРАЛЬНАЯ СИСТЕМА
+            # При ПЕРВОЙ оплате: Partner +$10, Manager +$3
+            # При продлении: ничего
+            from database import process_referral_payment
+            ref_result = await process_referral_payment(user_id)
+            
+            if ref_result['is_first']:
+                if ref_result['partner_bonus'] > 0:
+                    logger.info(f"💰 Partner {ref_result['partner_id']} got ${ref_result['partner_bonus']:.2f}")
+                if ref_result['manager_bonus'] > 0:
+                    logger.info(f"💰 Manager {ref_result['manager_id']} got ${ref_result['manager_bonus']:.2f}")
+            else:
+                logger.info(f"🔄 Renewal payment from {user_id} - no referral bonuses")
             
         except Exception as e:
             logger.error(f"Error granting access: {e}")
