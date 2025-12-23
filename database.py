@@ -1539,6 +1539,27 @@ async def get_partners_list(manager_code: str = None) -> list:
         await db_pool.release(conn)
 
 
+async def get_users_with_balance() -> list:
+    """Получить всех пользователей с балансом > 0 для выплат"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            SELECT id, username, balance, role 
+            FROM users 
+            WHERE balance > 0 
+            ORDER BY balance DESC
+        """)
+        rows = await cursor.fetchall()
+        return [{
+            "user_id": r[0],
+            "username": r[1],
+            "balance": r[2],
+            "role": r[3] or "user"
+        } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
 async def get_referral_stats_full() -> dict:
     """Полная статистика по реферальной системе"""
     conn = await db_pool.acquire()
