@@ -1031,11 +1031,24 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += f"👥 Всего пользователей: <b>{total}</b>\n"
     text += f"💎 Премиум: <b>{paid}</b>\n"
     text += f"📈 Конверсия: <b>{conversion:.1f}%</b>\n\n"
-    text += "<b>Команды:</b>\n"
-    text += "/grant ID DAYS — выдать доступ\n"
-    text += "/revoke ID — забрать доступ\n"
-    text += "/addmanager CODE NAME — создать менеджера\n"
-    text += "/delmanager CODE — удалить менеджера"
+    
+    text += "📋 <b>Все команды:</b>\n\n"
+    
+    text += "<b>👤 Пользователи:</b>\n"
+    text += "<code>/grant ID DAYS</code> — выдать доступ\n"
+    text += "<code>/revoke ID</code> — забрать доступ\n"
+    text += "<code>/addbalance ID SUM</code> — начислить баланс\n\n"
+    
+    text += "<b>👔 Менеджеры:</b>\n"
+    text += "<code>/addmanager CODE NAME</code> — создать\n"
+    text += "<code>/delmanager CODE</code> — удалить\n\n"
+    
+    text += "<b>📊 Система:</b>\n"
+    text += "<code>/limits</code> — лимиты сигналов\n"
+    text += "<code>/resetlimits</code> — сбросить лимиты\n"
+    text += "<code>/broadcast</code> — рассылка\n"
+    text += "<code>/backup</code> — создать бэкап\n"
+    text += "<code>/payout ID</code> — отметить выплату\n"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -1190,28 +1203,49 @@ async def cmd_delmanager(message: types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
-async def cmd_delmanager(message: types.Message):
-    """Удалить менеджера: /delmanager USER_ID"""
+async def cmd_addbalance(message: types.Message):
+    """
+    Начислить баланс пользователю: /addbalance ID AMOUNT
+    
+    Примеры:
+    /addbalance 123456789 50
+    /addbalance 123456789 10.5
+    """
     if message.from_user.id not in ADMIN_IDS:
         return
     
     try:
         parts = message.text.split()
-        if len(parts) >= 2:
+        if len(parts) >= 3:
             target_id = int(parts[1])
-            from database import set_user_role, get_user_role
+            amount = float(parts[2])
             
-            role = await get_user_role(target_id)
-            if role != "manager":
-                await message.answer(f"❌ Пользователь {target_id} не является менеджером.")
+            if amount <= 0:
+                await message.answer("❌ Сумма должна быть больше 0")
                 return
             
-            await set_user_role(target_id, "user")
-            await message.answer(f"✅ Менеджер удалён!\n\nUser ID: <code>{target_id}</code>\n\nТеперь он обычный пользователь.", parse_mode="HTML")
+            from database import add_referral_bonus, user_exists
+            
+            if not await user_exists(target_id):
+                await message.answer(f"❌ Пользователь {target_id} не найден")
+                return
+            
+            await add_referral_bonus(target_id, amount, 0)  # 0 = от админа
+            
+            text = f"✅ <b>Баланс начислен!</b>\n\n"
+            text += f"👤 User ID: <code>{target_id}</code>\n"
+            text += f"💰 Сумма: <b>+${amount:.2f}</b>"
+            await message.answer(text, parse_mode="HTML")
         else:
-            await message.answer("❌ Формат: /delmanager USER_ID\n\nПример: /delmanager 123456789")
+            await message.answer(
+                "❌ <b>Формат:</b> /addbalance ID AMOUNT\n\n"
+                "<b>Примеры:</b>\n"
+                "<code>/addbalance 123456789 50</code>\n"
+                "<code>/addbalance 123456789 10.5</code>",
+                parse_mode="HTML"
+            )
     except ValueError:
-        await message.answer("❌ Неверный ID пользователя")
+        await message.answer("❌ Неверный ID или сумма")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -1492,7 +1526,7 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_revoke, commands=["revoke"])
     dp.register_message_handler(cmd_addmanager, commands=["addmanager"])
     dp.register_message_handler(cmd_delmanager, commands=["delmanager"])
-    dp.register_message_handler(cmd_delmanager, commands=["delmanager"])
+    dp.register_message_handler(cmd_addbalance, commands=["addbalance"])
     dp.register_message_handler(cmd_broadcast, commands=["broadcast"])
     dp.register_message_handler(cmd_backup, commands=["backup"])
     dp.register_message_handler(cmd_restore, commands=["restore"])
