@@ -19,8 +19,7 @@ from database import (
     add_user, user_exists, get_user_lang, set_user_lang,
     is_paid, grant_access, revoke_access, get_user_pairs,
     add_user_pair, remove_user_pair, get_total_users, get_paid_users_count,
-    get_all_users, export_users_backup, import_users_backup, get_backup_stats,
-    db_pool
+    get_all_users, export_users_backup, import_users_backup, get_backup_stats
 )
 
 # Импорты для платежей
@@ -675,26 +674,10 @@ async def handle_callbacks(call: types.CallbackQuery):
     
     if data == "admin_payouts" or data.startswith("admin_pay_page_"):
         if user_id in ADMIN_IDS:
-            from database import get_referral_stats_full
+            from database import get_users_with_balance
             
             # Получаем всех с балансом > 0
-            conn = await db_pool.acquire()
-            try:
-                cursor = await conn.execute("""
-                    SELECT id, username, balance, role 
-                    FROM users 
-                    WHERE balance > 0 
-                    ORDER BY balance DESC
-                """)
-                rows = await cursor.fetchall()
-                pending_users = [{
-                    "user_id": r[0],
-                    "username": r[1],
-                    "balance": r[2],
-                    "role": r[3] or "user"
-                } for r in rows]
-            finally:
-                await db_pool.release(conn)
+            pending_users = await get_users_with_balance()
             
             # Пагинация
             if data.startswith("admin_pay_page_"):
