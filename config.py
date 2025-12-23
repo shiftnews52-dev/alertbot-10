@@ -168,6 +168,19 @@ if not BOT_TOKEN:
 if not CRYPTO_BOT_TOKEN:
     print("⚠️  Warning: CRYPTO_BOT_TOKEN not found - payments disabled")
 
+# ==================== РЕФЕРАЛЬНАЯ СИСТЕМА ====================
+# 2-уровневая: Manager → Partner → User
+# Бонусы с ПЕРВОЙ оплаты ($20)
+REFERRAL_BONUS_PARTNER = 10.0    # Partner (владелец канала) получает $10
+REFERRAL_BONUS_MANAGER = 3.0     # Manager (привёл партнёра) получает $3
+# Остальное ($7) - владельцу бота
+
+# Бонусы с продлений
+RENEWAL_BONUS_PARTNER = 0.0      # 0 за продление
+RENEWAL_BONUS_MANAGER = 0.0      # 0 за продление
+
+MIN_WITHDRAWAL = 10.0            # Минимум для вывода
+
 # ==================== STARTUP INFO ====================
 print(f"✅ Config loaded (RARE/HIGH/MEDIUM + Time Distribution):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
