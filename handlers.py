@@ -19,7 +19,8 @@ from database import (
     add_user, user_exists, get_user_lang, set_user_lang,
     is_paid, grant_access, revoke_access, get_user_pairs,
     add_user_pair, remove_user_pair, get_total_users, get_paid_users_count,
-    get_all_users, export_users_backup, import_users_backup, get_backup_stats
+    get_all_users, export_users_backup, import_users_backup, get_backup_stats,
+    db_pool
 )
 
 # Импорты для платежей
@@ -85,30 +86,60 @@ async def delete_and_send(message: types.Message, text: str, kb: InlineKeyboardM
 async def cmd_start(message: types.Message):
     """Команда /start"""
     user_id = message.from_user.id
-    username = message.from_user.username  # Сохраняем username
+    username = message.from_user.username
     
-    # Парсим реферальную ссылку (start=ref123456)
+    # Парсим ссылку:
+    # ref123456 — реферальная ссылка партнёра
+    # mgr_CODE — ссылка менеджера (CODE = текстовый код)
     args = message.get_args()
     referrer_id = None
-    if args and args.startswith("ref"):
-        try:
-            referrer_id = int(args[3:])  # убираем "ref"
-            logger.info(f"Referral detected: user {user_id} from ref {referrer_id}")
-        except ValueError:
-            pass
+    manager_code = None
     
-    # Новый пользователь - показываем выбор языка
+    if args:
+        if args.startswith("ref"):
+            try:
+                referrer_id = int(args[3:])  # ref123456 → 123456
+                logger.info(f"Referral detected: user {user_id} from partner {referrer_id}")
+            except ValueError:
+                pass
+        elif args.startswith("mgr_"):
+            manager_code = args[4:]  # mgr_john → john
+            logger.info(f"Manager link detected: user {user_id} from manager code '{manager_code}'")
+    
+    # Новый пользователь
     if not await user_exists(user_id):
         await add_user(user_id, "ru", invited_by=referrer_id, username=username)
         
-        # Устанавливаем реферера если есть
-        if referrer_id:
+        # Если пришёл по ссылке менеджера → становится партнёром
+        if manager_code:
+            from database import set_user_role, get_manager_by_code, increment_manager_partners
+            
+            # Проверяем что менеджер существует
+            manager = await get_manager_by_code(manager_code)
+            if manager:
+                await set_user_role(user_id, "partner", manager_code)
+                await increment_manager_partners(manager_code)
+                logger.info(f"✅ New partner: {user_id} under manager '{manager_code}'")
+            else:
+                logger.warning(f"Manager code '{manager_code}' not found")
+        elif referrer_id:
             logger.info(f"✅ Referrer set: {user_id} invited by {referrer_id}")
         
         await show_language_selection(message)
         return
     
-    # Обновляем username для существующего пользователя (мог измениться)
+    # Существующий пользователь, но пришёл по ссылке менеджера - апгрейд до партнёра
+    if manager_code:
+        from database import get_user_role, set_user_role, get_manager_by_code, increment_manager_partners
+        current_role = await get_user_role(user_id)
+        if current_role == "user":
+            manager = await get_manager_by_code(manager_code)
+            if manager:
+                await set_user_role(user_id, "partner", manager_code)
+                await increment_manager_partners(manager_code)
+                logger.info(f"✅ User {user_id} upgraded to partner under manager '{manager_code}'")
+    
+    # Обновляем username (мог измениться)
     if username:
         from database import update_username
         await update_username(user_id, username)
@@ -549,6 +580,168 @@ async def handle_callbacks(call: types.CallbackQuery):
             await delete_and_send(call.message, text, kb)
         return
     
+    # ===== МЕНЕДЖЕРЫ =====
+    if data == "admin_managers" or data.startswith("admin_mgr_page_"):
+        if user_id in ADMIN_IDS:
+            from database import get_all_managers
+            
+            if data.startswith("admin_mgr_page_"):
+                page = int(data.split("_")[-1])
+            else:
+                page = 0
+            
+            per_page = 10
+            managers = await get_all_managers()
+            total = len(managers)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            
+            start = page * per_page
+            end = start + per_page
+            page_managers = managers[start:end]
+            
+            text = f"👔 <b>МЕНЕДЖЕРЫ</b> ({total})\n"
+            text += f"📄 Страница {page + 1}/{total_pages}\n\n"
+            
+            if not page_managers:
+                text += "Нет менеджеров\n\n"
+                text += "Добавить: <code>/addmanager CODE NAME</code>"
+            else:
+                for m in page_managers:
+                    name = m['name'] or '—'
+                    text += f"<code>{m['code']}</code> | {name}\n"
+                    text += f"   👥 {m['partners_count']} партн. | 💎 {m['conversions']} конв. | 💰 ${m['balance']:.2f}\n"
+            
+            kb = InlineKeyboardMarkup(row_width=2)
+            
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"admin_mgr_page_{page - 1}"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"admin_mgr_page_{page + 1}"))
+            if nav_buttons:
+                kb.add(*nav_buttons)
+            
+            kb.add(InlineKeyboardButton("🔙 В админку", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
+    # ===== ПАРТНЁРЫ =====
+    if data == "admin_partners" or data.startswith("admin_prt_page_"):
+        if user_id in ADMIN_IDS:
+            from database import get_partners_list
+            
+            if data.startswith("admin_prt_page_"):
+                page = int(data.split("_")[-1])
+            else:
+                page = 0
+            
+            per_page = 15
+            partners = await get_partners_list()
+            total = len(partners)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            
+            start = page * per_page
+            end = start + per_page
+            page_partners = partners[start:end]
+            
+            text = f"🤝 <b>ПАРТНЁРЫ</b> ({total})\n"
+            text += f"📄 Страница {page + 1}/{total_pages}\n\n"
+            
+            if not page_partners:
+                text += "Нет партнёров\n\n"
+                text += "Партнёры появляются когда переходят по ссылке менеджера."
+            else:
+                for p in page_partners:
+                    uname = f"@{p['username']}" if p.get('username') else "—"
+                    mgr = p.get('manager_code') or "—"
+                    text += f"<code>{p['user_id']}</code> | {uname} | mgr: {mgr}\n"
+                    text += f"   👥 {p['referrals']} реф | 💎 {p['paid_referrals']} опл | 💰 ${p['balance']:.2f}\n"
+            
+            kb = InlineKeyboardMarkup(row_width=2)
+            
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"admin_prt_page_{page - 1}"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"admin_prt_page_{page + 1}"))
+            if nav_buttons:
+                kb.add(*nav_buttons)
+            
+            kb.add(InlineKeyboardButton("🔙 В админку", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
+    if data == "admin_payouts" or data.startswith("admin_pay_page_"):
+        if user_id in ADMIN_IDS:
+            from database import get_referral_stats_full
+            
+            # Получаем всех с балансом > 0
+            conn = await db_pool.acquire()
+            try:
+                cursor = await conn.execute("""
+                    SELECT id, username, balance, role 
+                    FROM users 
+                    WHERE balance > 0 
+                    ORDER BY balance DESC
+                """)
+                rows = await cursor.fetchall()
+                pending_users = [{
+                    "user_id": r[0],
+                    "username": r[1],
+                    "balance": r[2],
+                    "role": r[3] or "user"
+                } for r in rows]
+            finally:
+                await db_pool.release(conn)
+            
+            # Пагинация
+            if data.startswith("admin_pay_page_"):
+                page = int(data.split("_")[-1])
+            else:
+                page = 0
+            
+            per_page = 15
+            total = len(pending_users)
+            total_pending = sum(u["balance"] for u in pending_users)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            
+            start = page * per_page
+            end = start + per_page
+            page_users = pending_users[start:end]
+            
+            text = f"💰 <b>К ВЫПЛАТЕ</b>\n\n"
+            text += f"👥 Всего: {total} чел.\n"
+            text += f"💵 Сумма: <b>${total_pending:.2f}</b>\n"
+            text += f"📄 Страница {page + 1}/{total_pages}\n\n"
+            
+            if not page_users:
+                text += "Нет выплат"
+            else:
+                for u in page_users:
+                    uname = f"@{u['username']}" if u.get('username') else "—"
+                    role_emoji = "👔" if u['role'] == 'manager' else "🤝" if u['role'] == 'partner' else "👤"
+                    text += f"{role_emoji} <code>{u['user_id']}</code> | {uname}\n"
+                    text += f"   💰 <b>${u['balance']:.2f}</b>\n"
+            
+            text += f"\n<i>Выплата: /payout ID</i>"
+            
+            kb = InlineKeyboardMarkup(row_width=2)
+            
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"admin_pay_page_{page - 1}"))
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"admin_pay_page_{page + 1}"))
+            if nav_buttons:
+                kb.add(*nav_buttons)
+            
+            kb.add(InlineKeyboardButton("🔙 В админку", callback_data="admin_back"))
+            
+            await delete_and_send(call.message, text, kb)
+        return
+    
     if data == "admin_limits":
         if user_id in ADMIN_IDS:
             from tasks import get_daily_limits_info
@@ -731,50 +924,80 @@ async def show_guide(message: types.Message, lang: str):
 
 
 # ==================== РЕФЕРАЛКА ====================
-MIN_WITHDRAWAL = 20  # Минимальная сумма для вывода
+from config import MIN_WITHDRAWAL
 
 async def show_referral(message: types.Message, lang: str, user_id: int):
-    """Реферальная программа"""
-    from database import get_referral_stats
+    """Реферальная программа с учётом роли"""
+    from database import get_referral_stats, get_user_role, get_user_manager
     
     bot = Bot.get_current()
     bot_info = await bot.get_me()
     bot_username = bot_info.username
     
-    ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
-    
-    # Получаем реальную статистику
+    role = await get_user_role(user_id)
     stats = await get_referral_stats(user_id)
     total_refs = stats["total_referrals"]
     paid_refs = stats["paid_referrals"]
     earnings = stats["earnings"]
     
-    if lang == "en":
-        text = "👥 <b>REFERRAL PROGRAM</b>\n\n"
-        text += "Invite friends and earn with us 💸\n\n"
-        text += "You get <b>$10</b> for each invited user who pays — no limits.\n\n"
-        text += f"🔗 <b>Your personal link:</b>\n<code>{ref_link}</code>\n\n"
-        text += f"💰 Your earnings: <b>${earnings:.2f}</b>\n"
-        text += f"👥 Traders invited: <b>{total_refs}</b>\n"
-        if paid_refs > 0:
-            text += f"💎 Paid traders: <b>{paid_refs}</b>\n"
-        text += f"\n💵 Minimum withdrawal: ${MIN_WITHDRAWAL}"
-        text += "\n\n👉 More active traders — higher your passive income."
-    else:
-        text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
-        text += "Приглашай друзей и зарабатывай вместе с нами 💸\n\n"
-        text += "Ты получаешь <b>$10</b> за каждого приглашённого, который оплатит подписку — без лимитов.\n\n"
-        text += f"🔗 <b>Твоя персональная ссылка:</b>\n<code>{ref_link}</code>\n\n"
-        text += f"💰 Твой доход: <b>${earnings:.2f}</b>\n"
-        text += f"👥 Приведено трейдеров: <b>{total_refs}</b>\n"
-        if paid_refs > 0:
-            text += f"💎 Оплативших: <b>{paid_refs}</b>\n"
-        text += f"\n💵 Минимум для вывода: ${MIN_WITHDRAWAL}"
-        text += "\n\n👉 Чем больше активных трейдеров — тем выше твой пассивный доход."
-    
     kb = InlineKeyboardMarkup()
     
-    # Кнопка вывода если баланс >= MIN_WITHDRAWAL
+    # ===== PARTNER =====
+    if role == "partner":
+        ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
+        manager_code = await get_user_manager(user_id)
+        
+        if lang == "en":
+            text = "🤝 <b>PARTNER PANEL</b>\n\n"
+            text += "You are a <b>Partner</b>.\n"
+            text += "Share your link and earn <b>$10</b> for each paying user.\n\n"
+            text += f"🔗 <b>Your referral link:</b>\n<code>{ref_link}</code>\n\n"
+            text += f"👥 Users invited: <b>{total_refs}</b>\n"
+            text += f"💎 Paid users: <b>{paid_refs}</b>\n"
+            text += f"💰 Balance: <b>${earnings:.2f}</b>\n"
+            if manager_code:
+                text += f"\n👔 Your manager: <code>{manager_code}</code>"
+            text += f"\n\n💵 Min withdrawal: ${MIN_WITHDRAWAL}"
+        else:
+            text = "🤝 <b>ПАНЕЛЬ ПАРТНЁРА</b>\n\n"
+            text += "Ты — <b>Партнёр</b>.\n"
+            text += "Делись ссылкой и получай <b>$10</b> за каждого оплатившего.\n\n"
+            text += f"🔗 <b>Твоя реферальная ссылка:</b>\n<code>{ref_link}</code>\n\n"
+            text += f"👥 Приглашено: <b>{total_refs}</b>\n"
+            text += f"💎 Оплативших: <b>{paid_refs}</b>\n"
+            text += f"💰 Баланс: <b>${earnings:.2f}</b>\n"
+            if manager_code:
+                text += f"\n👔 Твой менеджер: <code>{manager_code}</code>"
+            text += f"\n\n💵 Минимум для вывода: ${MIN_WITHDRAWAL}"
+    
+    # ===== USER =====
+    else:
+        ref_link = f"https://t.me/{bot_username}?start=ref{user_id}"
+        
+        if lang == "en":
+            text = "👥 <b>REFERRAL PROGRAM</b>\n\n"
+            text += "Invite friends and earn with us 💸\n\n"
+            text += "You get <b>$10</b> for each invited user who pays — no limits.\n\n"
+            text += f"🔗 <b>Your personal link:</b>\n<code>{ref_link}</code>\n\n"
+            text += f"💰 Your earnings: <b>${earnings:.2f}</b>\n"
+            text += f"👥 Traders invited: <b>{total_refs}</b>\n"
+            if paid_refs > 0:
+                text += f"💎 Paid traders: <b>{paid_refs}</b>\n"
+            text += f"\n💵 Minimum withdrawal: ${MIN_WITHDRAWAL}"
+            text += "\n\n👉 More active traders — higher your passive income."
+        else:
+            text = "👥 <b>РЕФЕРАЛЬНАЯ ПРОГРАММА</b>\n\n"
+            text += "Приглашай друзей и зарабатывай вместе с нами 💸\n\n"
+            text += "Ты получаешь <b>$10</b> за каждого приглашённого, который оплатит подписку — без лимитов.\n\n"
+            text += f"🔗 <b>Твоя персональная ссылка:</b>\n<code>{ref_link}</code>\n\n"
+            text += f"💰 Твой доход: <b>${earnings:.2f}</b>\n"
+            text += f"👥 Приведено трейдеров: <b>{total_refs}</b>\n"
+            if paid_refs > 0:
+                text += f"💎 Оплативших: <b>{paid_refs}</b>\n"
+            text += f"\n💵 Минимум для вывода: ${MIN_WITHDRAWAL}"
+            text += "\n\n👉 Чем больше активных трейдеров — тем выше твой пассивный доход."
+    
+    # Кнопка вывода
     if earnings >= MIN_WITHDRAWAL:
         btn_text = "💰 Withdraw" if lang == "en" else "💰 Вывести"
         kb.add(InlineKeyboardButton(btn_text, callback_data="ref_withdraw"))
@@ -828,11 +1051,8 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += "<b>Команды:</b>\n"
     text += "/grant ID DAYS — выдать доступ\n"
     text += "/revoke ID — забрать доступ\n"
-    text += "/limits — лимиты сигналов\n"
-    text += "/resetlimits — сбросить лимиты\n"
-    text += "/broadcast — рассылка\n"
-    text += "/backup — создать бэкап\n"
-    text += "/referrals — статистика рефералов"
+    text += "/addmanager CODE NAME — создать менеджера\n"
+    text += "/delmanager CODE — удалить менеджера"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -844,11 +1064,15 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
         InlineKeyboardButton("💾 Бэкап", callback_data="admin_backup")
     )
     kb.add(
-        InlineKeyboardButton("👥 Рефералы", callback_data="admin_referrals"),
-        InlineKeyboardButton("📊 Лимиты", callback_data="admin_limits")
+        InlineKeyboardButton("👔 Менеджеры", callback_data="admin_managers"),
+        InlineKeyboardButton("🤝 Партнёры", callback_data="admin_partners")
     )
     kb.add(
         InlineKeyboardButton("💎 Подписчики", callback_data="admin_subscribers"),
+        InlineKeyboardButton("📊 Лимиты", callback_data="admin_limits")
+    )
+    kb.add(
+        InlineKeyboardButton("💰 Выплаты", callback_data="admin_payouts"),
         InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")
     )
     
@@ -891,6 +1115,118 @@ async def cmd_revoke(message: types.Message):
             await message.answer(f"❌ Доступ забран!\n\nUser ID: {target_id}")
         else:
             await message.answer("❌ Формат: /revoke USER_ID\n\nПример: /revoke 123456789")
+    except ValueError:
+        await message.answer("❌ Неверный ID пользователя")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_addmanager(message: types.Message):
+    """
+    Добавить менеджера: /addmanager CODE [NAME]
+    
+    Примеры:
+    /addmanager john
+    /addmanager promo2024 Иван Промо
+    """
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split(maxsplit=2)
+        if len(parts) >= 2:
+            code = parts[1].lower().strip()
+            name = parts[2] if len(parts) > 2 else None
+            
+            # Валидация кода
+            if not code.isalnum() or len(code) < 2 or len(code) > 20:
+                await message.answer("❌ Код должен быть 2-20 символов (буквы и цифры)")
+                return
+            
+            from database import create_manager
+            
+            bot = Bot.get_current()
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username
+            
+            success = await create_manager(code, name)
+            
+            if success:
+                link = f"https://t.me/{bot_username}?start=mgr_{code}"
+                text = f"✅ <b>Менеджер создан!</b>\n\n"
+                text += f"📝 Код: <code>{code}</code>\n"
+                if name:
+                    text += f"👤 Имя: {name}\n"
+                text += f"\n🔗 <b>Ссылка для партнёров:</b>\n<code>{link}</code>\n\n"
+                text += "Отправь эту ссылку менеджеру. Все кто перейдут по ней станут партнёрами."
+                await message.answer(text, parse_mode="HTML")
+            else:
+                await message.answer(f"❌ Код '{code}' уже занят. Выбери другой.")
+        else:
+            await message.answer(
+                "❌ <b>Формат:</b> /addmanager CODE [NAME]\n\n"
+                "<b>Примеры:</b>\n"
+                "<code>/addmanager john</code>\n"
+                "<code>/addmanager promo2024 Иван Промо</code>\n\n"
+                "CODE — уникальный код (2-20 символов)\n"
+                "NAME — имя/описание (опционально)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_delmanager(message: types.Message):
+    """Удалить менеджера: /delmanager CODE"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            code = parts[1].lower().strip()
+            
+            from database import get_manager_by_code, delete_manager
+            
+            manager = await get_manager_by_code(code)
+            if not manager:
+                await message.answer(f"❌ Менеджер с кодом '{code}' не найден")
+                return
+            
+            await delete_manager(code)
+            
+            text = f"✅ <b>Менеджер удалён!</b>\n\n"
+            text += f"📝 Код: <code>{code}</code>\n"
+            if manager.get('name'):
+                text += f"👤 Имя: {manager['name']}\n"
+            text += f"💰 Баланс был: ${manager['balance']:.2f}"
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer("❌ Формат: /delmanager CODE\n\nПример: /delmanager john")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_delmanager(message: types.Message):
+    """Удалить менеджера: /delmanager USER_ID"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            target_id = int(parts[1])
+            from database import set_user_role, get_user_role
+            
+            role = await get_user_role(target_id)
+            if role != "manager":
+                await message.answer(f"❌ Пользователь {target_id} не является менеджером.")
+                return
+            
+            await set_user_role(target_id, "user")
+            await message.answer(f"✅ Менеджер удалён!\n\nUser ID: <code>{target_id}</code>\n\nТеперь он обычный пользователь.", parse_mode="HTML")
+        else:
+            await message.answer("❌ Формат: /delmanager USER_ID\n\nПример: /delmanager 123456789")
     except ValueError:
         await message.answer("❌ Неверный ID пользователя")
     except Exception as e:
@@ -1171,6 +1507,9 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_admin, commands=["admin"])
     dp.register_message_handler(cmd_grant, commands=["grant"])
     dp.register_message_handler(cmd_revoke, commands=["revoke"])
+    dp.register_message_handler(cmd_addmanager, commands=["addmanager"])
+    dp.register_message_handler(cmd_delmanager, commands=["delmanager"])
+    dp.register_message_handler(cmd_delmanager, commands=["delmanager"])
     dp.register_message_handler(cmd_broadcast, commands=["broadcast"])
     dp.register_message_handler(cmd_backup, commands=["backup"])
     dp.register_message_handler(cmd_restore, commands=["restore"])
