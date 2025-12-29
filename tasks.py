@@ -33,7 +33,7 @@ from config import (
 )
 from database import (
     get_all_tracked_pairs, get_pairs_with_users,
-    count_signals_today, log_signal, get_all_user_ids
+    count_signals_today, log_signal, get_all_user_ids, get_user_lang
 )
 from indicators import CANDLES, fetch_price, fetch_candles_binance
 from professional_analyzer import CryptoMickyAnalyzer
@@ -41,6 +41,75 @@ from professional_analyzer import CryptoMickyAnalyzer
 logger = logging.getLogger(__name__)
 
 crypto_micky_analyzer = CryptoMickyAnalyzer()
+
+
+def format_signal(signal: dict, signal_type: str, lang: str = "ru") -> str:
+    """
+    Форматирование сигнала на нужном языке
+    
+    Args:
+        signal: данные сигнала
+        signal_type: 'RARE', 'HIGH', 'MEDIUM'
+        lang: 'ru' или 'en'
+    """
+    # Бейдж типа
+    if signal_type == 'RARE':
+        type_badge = "🔥 RARE"
+    elif signal_type == 'HIGH':
+        type_badge = "⚡ HIGH"
+    else:
+        type_badge = "📊 MEDIUM"
+    
+    side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
+    entry_min, entry_max = signal['entry_zone']
+    
+    if lang == "en":
+        text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+        text += "<b>Logic:</b>\n"
+        for reason in signal['reasons'][:5]:
+            # Переводим базовые термины
+            reason_en = reason.replace("Тренд", "Trend")\
+                             .replace("Поддержка", "Support")\
+                             .replace("Сопротивление", "Resistance")\
+                             .replace("Сильный", "Strong")\
+                             .replace("Слабый", "Weak")\
+                             .replace("вверх", "up")\
+                             .replace("вниз", "down")\
+                             .replace("бычий", "bullish")\
+                             .replace("медвежий", "bearish")\
+                             .replace("пробой", "breakout")\
+                             .replace("отскок", "bounce")\
+                             .replace("дивергенция", "divergence")\
+                             .replace("перекуплен", "overbought")\
+                             .replace("перепродан", "oversold")
+            text += f"• {reason_en}\n"
+        text += "\n"
+        
+        text += f"🎯 <b>Entry:</b> {entry_min:.4f} - {entry_max:.4f}\n"
+        text += f"🎯 <b>Targets:</b>\n"
+        text += f"   TP1: {signal['take_profit_1']:.4f}\n"
+        text += f"   TP2: {signal['take_profit_2']:.4f}\n"
+        text += f"   TP3: {signal['take_profit_3']:.4f}\n"
+        text += f"🛡 <b>Stop:</b> {signal['stop_loss']:.4f}\n\n"
+        text += f"📊 <b>Confidence:</b> {type_badge}\n\n"
+        text += "⚠️ <i>Not financial advice</i>"
+    else:
+        text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+        text += "<b>Логика:</b>\n"
+        for reason in signal['reasons'][:5]:
+            text += f"• {reason}\n"
+        text += "\n"
+        
+        text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n"
+        text += f"🎯 <b>Цели:</b>\n"
+        text += f"   TP1: {signal['take_profit_1']:.4f}\n"
+        text += f"   TP2: {signal['take_profit_2']:.4f}\n"
+        text += f"   TP3: {signal['take_profit_3']:.4f}\n"
+        text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
+        text += f"📊 <b>Confidence:</b> {type_badge}\n\n"
+        text += "⚠️ <i>Не финансовый совет</i>"
+    
+    return text
 
 LAST_SIGNALS = {}
 
@@ -300,31 +369,24 @@ async def process_signal_queue(bot: Bot):
                 
                 logger.info(f"📤 Sending queued signal: {pair} {signal_type_badge}")
                 
-                # Формируем сообщение
-                side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
-                text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
-                text += "<b>Логика:</b>\n"
-                for reason_txt in signal['reasons'][:5]:
-                    text += f"• {reason_txt}\n"
-                text += "\n"
+                # Группируем юзеров по языку
+                from database import get_users_by_lang
+                users_by_lang = await get_users_by_lang(users)
                 
-                entry_min, entry_max = signal['entry_zone']
-                text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n"
-                text += f"🎯 <b>Цели:</b>\n"
-                text += f"   TP1: {signal['take_profit_1']:.4f}\n"
-                text += f"   TP2: {signal['take_profit_2']:.4f}\n"
-                text += f"   TP3: {signal['take_profit_3']:.4f}\n"
-                text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
-                text += f"📊 <b>Confidence:</b> {signal_type_badge}\n\n"
-                text += "⚠️ <i>Не финансовый совет</i>"
-                
-                # Отправка
+                # Отправка по языкам
                 sent_count = 0
-                for user_id in users:
-                    success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
-                    if success:
-                        sent_count += 1
-                    await asyncio.sleep(BATCH_SEND_DELAY)
+                
+                for lang, lang_users in users_by_lang.items():
+                    if not lang_users:
+                        continue
+                    
+                    text = format_signal(signal, signal_type, lang)
+                    
+                    for user_id in lang_users:
+                        success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                        if success:
+                            sent_count += 1
+                        await asyncio.sleep(BATCH_SEND_DELAY)
                 
                 if sent_count > 0:
                     from database import log_signal
@@ -548,32 +610,24 @@ async def signal_analyzer(bot: Bot):
                     
                     logger.info(f"🎯 SIGNAL: {pair} {signal['side']} ({type_badge}, {confidence_pct:.1f}%)")
                     
-                    # Формируем сообщение
-                    side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
+                    # Группируем юзеров по языку
+                    from database import get_users_by_lang
+                    users_by_lang = await get_users_by_lang(users)
                     
-                    text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
-                    text += "<b>Логика:</b>\n"
-                    for reason in signal['reasons'][:5]:  # Макс 5 причин
-                        text += f"• {reason}\n"
-                    text += "\n"
-                    
-                    entry_min, entry_max = signal['entry_zone']
-                    text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n"
-                    text += f"🎯 <b>Цели:</b>\n"
-                    text += f"   TP1: {signal['take_profit_1']:.4f}\n"
-                    text += f"   TP2: {signal['take_profit_2']:.4f}\n"
-                    text += f"   TP3: {signal['take_profit_3']:.4f}\n"
-                    text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
-                    text += f"📊 <b>Confidence:</b> {type_badge}\n\n"
-                    text += "⚠️ <i>Не финансовый совет</i>"
-                    
-                    # Отправка
+                    # Отправка по языкам
                     sent_count = 0
-                    for user_id in users:
-                        success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
-                        if success:
-                            sent_count += 1
-                        await asyncio.sleep(BATCH_SEND_DELAY)
+                    
+                    for lang, lang_users in users_by_lang.items():
+                        if not lang_users:
+                            continue
+                        
+                        text = format_signal(signal, signal_type, lang)
+                        
+                        for user_id in lang_users:
+                            success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                            if success:
+                                sent_count += 1
+                            await asyncio.sleep(BATCH_SEND_DELAY)
                     
                     if sent_count > 0:
                         await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
