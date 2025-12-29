@@ -168,6 +168,7 @@ async def init_db():
             ("role", "TEXT DEFAULT 'user'"),
             ("manager_id", "TEXT"),  # Теперь хранит CODE менеджера, не ID
             ("first_payment_done", "INTEGER DEFAULT 0"),
+            ("trial_used", "INTEGER DEFAULT 0"),  # Использовал ли триал
         ]
         
         for col_name, col_type in migrations:
@@ -1556,6 +1557,93 @@ async def get_users_with_balance() -> list:
             "balance": r[2],
             "role": r[3] or "user"
         } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+# ==================== ТРИАЛ ====================
+TRIAL_DAYS = 2  # Длительность пробного периода
+
+async def can_use_trial(user_id: int) -> bool:
+    """Проверить, может ли юзер использовать триал"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT trial_used FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row is None or row[0] != 1
+    finally:
+        await db_pool.release(conn)
+
+
+async def activate_trial(user_id: int) -> bool:
+    """
+    Активировать триал для юзера
+    
+    Returns:
+        True если триал активирован
+        False если триал уже был использован
+    """
+    conn = await db_pool.acquire()
+    try:
+        # Проверяем не использован ли триал
+        cursor = await conn.execute(
+            "SELECT trial_used, paid FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        
+        if row and row[0] == 1:
+            logger.info(f"Trial already used for user {user_id}")
+            return False
+        
+        if row and row[1] == 1:
+            logger.info(f"User {user_id} already has paid access")
+            return False
+        
+        # Активируем триал
+        expiry = int((datetime.now().timestamp())) + (TRIAL_DAYS * 86400)
+        
+        await conn.execute("""
+            UPDATE users 
+            SET paid = 1, subscription_expiry = ?, trial_used = 1
+            WHERE id = ?
+        """, (expiry, user_id))
+        await conn.commit()
+        
+        logger.info(f"✅ Trial activated for user {user_id} ({TRIAL_DAYS} days)")
+        return True
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_users_by_lang(user_ids: list) -> dict:
+    """
+    Получить юзеров сгруппированных по языку
+    
+    Returns:
+        {'ru': [id1, id2], 'en': [id3, id4]}
+    """
+    if not user_ids:
+        return {'ru': [], 'en': []}
+    
+    conn = await db_pool.acquire()
+    try:
+        placeholders = ','.join('?' * len(user_ids))
+        cursor = await conn.execute(
+            f"SELECT id, lang FROM users WHERE id IN ({placeholders})",
+            user_ids
+        )
+        rows = await cursor.fetchall()
+        
+        result = {'ru': [], 'en': []}
+        for user_id, lang in rows:
+            if lang == 'en':
+                result['en'].append(user_id)
+            else:
+                result['ru'].append(user_id)
+        
+        return result
     finally:
         await db_pool.release(conn)
 
