@@ -1631,7 +1631,7 @@ async def get_users_by_lang(user_ids: list) -> dict:
     try:
         placeholders = ','.join('?' * len(user_ids))
         cursor = await conn.execute(
-            f"SELECT id, lang FROM users WHERE id IN ({placeholders})",
+            f"SELECT id, language FROM users WHERE id IN ({placeholders})",
             user_ids
         )
         rows = await cursor.fetchall()
