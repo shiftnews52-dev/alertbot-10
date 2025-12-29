@@ -346,16 +346,50 @@ async def handle_callbacks(call: types.CallbackQuery):
         new_lang = data.split("_")[1]
         await set_user_lang(user_id, new_lang)
         
-        if new_lang == "en":
-            await call.answer("✅ Language changed to English", show_alert=True)
-        else:
-            await call.answer("✅ Язык изменён на русский", show_alert=True)
-        
         try:
             await call.message.delete()
         except:
             pass
         
+        # Активируем триал для новых юзеров
+        from database import activate_trial, can_use_trial
+        
+        if await can_use_trial(user_id):
+            trial_activated = await activate_trial(user_id)
+            
+            if trial_activated:
+                # Показываем приветствие с триалом
+                if new_lang == "en":
+                    text = "🎁 <b>WELCOME!</b>\n\n"
+                    text += "You've got <b>2 days FREE</b> premium access!\n\n"
+                    text += "✅ All trading signals unlocked\n"
+                    text += "✅ RARE, HIGH, MEDIUM signals\n"
+                    text += "✅ Real-time notifications\n\n"
+                    text += "Try it now and make your first profits! 💰"
+                else:
+                    text = "🎁 <b>ДОБРО ПОЖАЛОВАТЬ!</b>\n\n"
+                    text += "Тебе доступно <b>2 дня БЕСПЛАТНО</b> премиум!\n\n"
+                    text += "✅ Все торговые сигналы открыты\n"
+                    text += "✅ RARE, HIGH, MEDIUM сигналы\n"
+                    text += "✅ Уведомления в реальном времени\n\n"
+                    text += "Попробуй прямо сейчас и заработай первые деньги! 💰"
+                
+                kb = InlineKeyboardMarkup()
+                btn_text = "🚀 Let's go!" if new_lang == "en" else "🚀 Поехали!"
+                kb.add(InlineKeyboardButton(btn_text, callback_data="back_main"))
+                
+                await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
+                await call.answer()
+                return
+        
+        # Обычный выбор языка (не триал)
+        if new_lang == "en":
+            await call.answer("✅ Language changed to English", show_alert=True)
+        else:
+            await call.answer("✅ Язык изменён на русский", show_alert=True)
+        
+        # Обновляем paid статус после возможной активации триала
+        paid = await is_paid(user_id)
         await show_main_menu(call.message, new_lang, paid, is_start=True)
         return
     
@@ -1049,6 +1083,7 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += "<code>/broadcast</code> — рассылка\n"
     text += "<code>/backup</code> — создать бэкап\n"
     text += "<code>/payout ID</code> — отметить выплату\n"
+    text += "<code>/testsplit ID</code> — тест распределения 💰"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -1246,6 +1281,84 @@ async def cmd_addbalance(message: types.Message):
             )
     except ValueError:
         await message.answer("❌ Неверный ID или сумма")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_testsplit(message: types.Message):
+    """
+    Тест распределения денег: /testsplit USER_ID
+    Показывает кто получит деньги при оплате этого юзера
+    """
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            target_id = int(parts[1])
+            
+            from database import (
+                user_exists, get_referrer, get_user_role, 
+                get_user_manager, is_first_payment, get_manager_by_code
+            )
+            
+            if not await user_exists(target_id):
+                await message.answer(f"❌ Пользователь {target_id} не найден")
+                return
+            
+            text = f"🧪 <b>ТЕСТ РАСПРЕДЕЛЕНИЯ</b>\n\n"
+            text += f"👤 User ID: <code>{target_id}</code>\n\n"
+            
+            # Проверяем первая ли оплата
+            is_first = await is_first_payment(target_id)
+            if not is_first:
+                text += "⚠️ <b>Это ПРОДЛЕНИЕ</b> — никто ничего не получит\n"
+                text += "💵 Все $20 → тебе"
+                await message.answer(text, parse_mode="HTML")
+                return
+            
+            text += "✅ Это ПЕРВАЯ оплата\n\n"
+            
+            # Кто пригласил (партнёр)
+            partner_id = await get_referrer(target_id)
+            
+            if not partner_id:
+                text += "❌ Нет реферера — пришёл сам\n"
+                text += "💵 Все $20 → тебе"
+                await message.answer(text, parse_mode="HTML")
+                return
+            
+            text += f"🤝 <b>Партнёр:</b> <code>{partner_id}</code>\n"
+            text += f"   💰 Получит: <b>$10</b>\n\n"
+            
+            # Менеджер партнёра
+            manager_code = await get_user_manager(partner_id)
+            
+            if manager_code:
+                manager = await get_manager_by_code(manager_code)
+                if manager:
+                    text += f"👔 <b>Менеджер:</b> <code>{manager_code}</code>"
+                    if manager.get('name'):
+                        text += f" ({manager['name']})"
+                    text += f"\n   💰 Получит: <b>$3</b>\n\n"
+                    text += "💵 Тебе остаётся: <b>$7</b>"
+                else:
+                    text += f"⚠️ Менеджер <code>{manager_code}</code> не найден в БД!\n"
+                    text += "💵 Тебе остаётся: <b>$10</b>"
+            else:
+                text += "👔 Менеджера нет (партнёр пришёл сам)\n"
+                text += "💵 Тебе остаётся: <b>$10</b>"
+            
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer(
+                "❌ <b>Формат:</b> /testsplit USER_ID\n\n"
+                "Покажет кто получит деньги при оплате этого юзера",
+                parse_mode="HTML"
+            )
+    except ValueError:
+        await message.answer("❌ Неверный ID")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -1527,6 +1640,7 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_addmanager, commands=["addmanager"])
     dp.register_message_handler(cmd_delmanager, commands=["delmanager"])
     dp.register_message_handler(cmd_addbalance, commands=["addbalance"])
+    dp.register_message_handler(cmd_testsplit, commands=["testsplit"])
     dp.register_message_handler(cmd_broadcast, commands=["broadcast"])
     dp.register_message_handler(cmd_backup, commands=["backup"])
     dp.register_message_handler(cmd_restore, commands=["restore"])
