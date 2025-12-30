@@ -1648,6 +1648,35 @@ async def get_users_by_lang(user_ids: list) -> dict:
         await db_pool.release(conn)
 
 
+async def get_user_by_username(username: str) -> dict:
+    """
+    Найти юзера по username
+    
+    Returns:
+        {'user_id': 123, 'username': 'name', 'paid': 0/1} или None
+    """
+    # Убираем @ если есть
+    username = username.lstrip('@').lower()
+    
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "SELECT id, username, paid FROM users WHERE LOWER(username) = ?",
+            (username,)
+        )
+        row = await cursor.fetchone()
+        
+        if row:
+            return {
+                'user_id': row[0],
+                'username': row[1],
+                'paid': row[2]
+            }
+        return None
+    finally:
+        await db_pool.release(conn)
+
+
 async def get_referral_stats_full() -> dict:
     """Полная статистика по реферальной системе"""
     conn = await db_pool.acquire()
