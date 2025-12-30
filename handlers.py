@@ -1069,8 +1069,8 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
     text += "📋 <b>Все команды:</b>\n\n"
     
     text += "<b>👤 Пользователи:</b>\n"
-    text += "<code>/grant ID DAYS</code> — выдать доступ\n"
-    text += "<code>/revoke ID</code> — забрать доступ\n"
+    text += "<code>/grant @user DAYS</code> — выдать доступ\n"
+    text += "<code>/revoke @user</code> — забрать доступ\n"
     text += "<code>/addbalance ID SUM</code> — начислить баланс\n\n"
     
     text += "<b>👔 Менеджеры:</b>\n"
@@ -1114,38 +1114,94 @@ async def show_admin_panel(message: types.Message, is_callback: bool = False):
 
 
 async def cmd_grant(message: types.Message):
-    """Выдать доступ: /grant USER_ID DAYS"""
+    """Выдать доступ: /grant USER_ID|@username DAYS"""
     if message.from_user.id not in ADMIN_IDS:
         return
     
     try:
         parts = message.text.split()
         if len(parts) >= 2:
-            target_id = int(parts[1])
+            target = parts[1]
             days = int(parts[2]) if len(parts) >= 3 else 30
+            
+            # Проверяем: ID или username?
+            if target.startswith('@') or not target.isdigit():
+                # Это username
+                from database import get_user_by_username
+                user = await get_user_by_username(target)
+                if not user:
+                    await message.answer(f"❌ Пользователь @{target.lstrip('@')} не найден в базе")
+                    return
+                target_id = user['user_id']
+                username = user['username']
+            else:
+                # Это ID
+                target_id = int(target)
+                username = None
+            
             await grant_access(target_id, days)
-            await message.answer(f"✅ Доступ выдан!\n\nUser ID: {target_id}\nДней: {days}")
+            
+            text = f"✅ <b>Доступ выдан!</b>\n\n"
+            text += f"👤 User ID: <code>{target_id}</code>\n"
+            if username:
+                text += f"📛 Username: @{username}\n"
+            text += f"📅 Дней: <b>{days}</b>"
+            await message.answer(text, parse_mode="HTML")
         else:
-            await message.answer("❌ Формат: /grant USER_ID [DAYS]\n\nПример: /grant 123456789 30")
+            await message.answer(
+                "❌ <b>Формат:</b> /grant USER [DAYS]\n\n"
+                "<b>Примеры:</b>\n"
+                "<code>/grant 123456789 30</code>\n"
+                "<code>/grant @username 30</code>\n"
+                "<code>/grant username 7</code>",
+                parse_mode="HTML"
+            )
     except ValueError:
-        await message.answer("❌ Неверный ID пользователя")
+        await message.answer("❌ Неверный ID или количество дней")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
 
 async def cmd_revoke(message: types.Message):
-    """Забрать доступ: /revoke USER_ID"""
+    """Забрать доступ: /revoke USER_ID|@username"""
     if message.from_user.id not in ADMIN_IDS:
         return
     
     try:
         parts = message.text.split()
         if len(parts) >= 2:
-            target_id = int(parts[1])
+            target = parts[1]
+            
+            # Проверяем: ID или username?
+            if target.startswith('@') or not target.isdigit():
+                # Это username
+                from database import get_user_by_username
+                user = await get_user_by_username(target)
+                if not user:
+                    await message.answer(f"❌ Пользователь @{target.lstrip('@')} не найден в базе")
+                    return
+                target_id = user['user_id']
+                username = user['username']
+            else:
+                # Это ID
+                target_id = int(target)
+                username = None
+            
             await revoke_access(target_id)
-            await message.answer(f"❌ Доступ забран!\n\nUser ID: {target_id}")
+            
+            text = f"❌ <b>Доступ забран!</b>\n\n"
+            text += f"👤 User ID: <code>{target_id}</code>"
+            if username:
+                text += f"\n📛 Username: @{username}"
+            await message.answer(text, parse_mode="HTML")
         else:
-            await message.answer("❌ Формат: /revoke USER_ID\n\nПример: /revoke 123456789")
+            await message.answer(
+                "❌ <b>Формат:</b> /revoke USER\n\n"
+                "<b>Примеры:</b>\n"
+                "<code>/revoke 123456789</code>\n"
+                "<code>/revoke @username</code>",
+                parse_mode="HTML"
+            )
     except ValueError:
         await message.answer("❌ Неверный ID пользователя")
     except Exception as e:
