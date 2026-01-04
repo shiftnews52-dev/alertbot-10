@@ -282,7 +282,7 @@ async def grant_subscription_access(user_id: int, plan_id: str):
         user_id: ID пользователя
         plan_id: ID тарифного плана
     """
-    from database import grant_access, db_pool
+    from database import grant_access, db_pool, track_purchase
     
     plan = SUBSCRIPTION_PLANS.get(plan_id)
     if not plan:
@@ -291,6 +291,9 @@ async def grant_subscription_access(user_id: int, plan_id: str):
     
     # Выдаём доступ
     await grant_access(user_id)
+    
+    # Трекинг покупки (для рекламных ссылок)
+    await track_purchase(user_id, plan["price"])
     
     # Устанавливаем дату окончания подписки
     expiry_date = datetime.now() + timedelta(days=plan["duration_days"])
