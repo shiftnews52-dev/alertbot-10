@@ -795,11 +795,13 @@ async def send_delayed_free_signals(bot: Bot):
     """
     Отправка FREE сигналов с задержкой 45 минут
     Только MEDIUM сигналы, макс 1 в день
+    FREE получают ВСЕ MEDIUM сигналы (не по подпискам на пары)
     """
     try:
         # Проверяем лимит FREE
         can_send, reason = await can_send_signal('MEDIUM', is_free=True)
         if not can_send:
+            logger.debug(f"FREE signal blocked: {reason}")
             return
         
         # Получаем сигналы готовые к отправке FREE
@@ -811,28 +813,48 @@ async def send_delayed_free_signals(bot: Bot):
         # Берём первый (самый старый)
         signal_data = pending_signals[0]
         
-        logger.info(f"📤 Sending FREE signal: {signal_data['pair']} (delayed)")
+        logger.info(f"📤 Sending FREE signal: {signal_data['pair']} {signal_data['side']} (delayed 45min)")
         
         # Получаем FREE юзеров
         free_users = await get_free_users()
         
         if not free_users:
+            logger.info("ℹ️ No FREE users to send signal")
             # Отмечаем как отправленный чтобы не застрял
             await mark_signal_sent_to_free(signal_data['id'])
             return
         
-        # Формируем урезанный сигнал
-        # Нужно получить полные данные из active_signals или воссоздать
-        signal = {
-            'pair': signal_data['pair'],
-            'side': signal_data['side'],
-            'price': signal_data['entry_price'],
-            'entry_zone': (signal_data['entry_price'] * 0.99, signal_data['entry_price'] * 1.01),
-            'take_profit_1': signal_data['entry_price'] * (1.02 if signal_data['side'] == 'LONG' else 0.98),
-            'take_profit_2': signal_data['entry_price'] * (1.04 if signal_data['side'] == 'LONG' else 0.96),
-            'take_profit_3': signal_data['entry_price'] * (1.06 if signal_data['side'] == 'LONG' else 0.94),
-            'stop_loss': signal_data['entry_price'] * (0.98 if signal_data['side'] == 'LONG' else 1.02),
-        }
+        logger.info(f"📊 Found {len(free_users)} FREE users")
+        
+        # Получаем полные данные сигнала из active_signals
+        from database import get_active_signal_by_pair
+        full_signal = await get_active_signal_by_pair(signal_data['pair'], signal_data['side'])
+        
+        if full_signal:
+            signal = {
+                'pair': signal_data['pair'],
+                'side': signal_data['side'],
+                'price': signal_data['entry_price'],
+                'entry_zone': (full_signal['entry_min'], full_signal['entry_max']),
+                'take_profit_1': full_signal['tp1'],
+                'take_profit_2': full_signal['tp2'],
+                'take_profit_3': full_signal['tp3'],
+                'stop_loss': full_signal['stop_loss'],
+            }
+        else:
+            # Fallback - рассчитываем примерно
+            price = signal_data['entry_price']
+            is_long = signal_data['side'] == 'LONG'
+            signal = {
+                'pair': signal_data['pair'],
+                'side': signal_data['side'],
+                'price': price,
+                'entry_zone': (price * 0.99, price * 1.01),
+                'take_profit_1': price * (1.02 if is_long else 0.98),
+                'take_profit_2': price * (1.04 if is_long else 0.96),
+                'take_profit_3': price * (1.06 if is_long else 0.94),
+                'stop_loss': price * (0.98 if is_long else 1.02),
+            }
         
         # Группируем по языку
         users_by_lang = await get_users_by_lang(free_users)
@@ -868,6 +890,8 @@ async def send_delayed_free_signals(bot: Bot):
         
         # Увеличиваем счётчик FREE
         await increment_daily_count('MEDIUM', is_free=True)
+        
+        logger.info(f"✅ FREE signal sent to {sent_count}/{len(free_users)} users")
         
         logger.info(f"✅ FREE signal sent to {sent_count} users")
         
