@@ -1472,6 +1472,46 @@ async def cmd_resetlimits(message: types.Message):
     await message.answer(text, parse_mode="HTML")
 
 
+async def cmd_freestatus(message: types.Message):
+    """Статус FREE системы: /freestatus"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    from database import (
+        get_free_users, get_pro_users, get_pending_free_signals,
+        get_daily_counts, get_signals_sent_today
+    )
+    from config import FREE_SIGNAL_DELAY
+    
+    free_users = await get_free_users()
+    pro_users = await get_pro_users()
+    pending = await get_pending_free_signals()
+    counts = await get_daily_counts()
+    signals_today = await get_signals_sent_today()
+    
+    text = "📊 <b>FREE SYSTEM STATUS</b>\n\n"
+    text += f"👥 <b>Users:</b>\n"
+    text += f"   PRO: {len(pro_users)}\n"
+    text += f"   FREE: {len(free_users)}\n\n"
+    
+    text += f"📈 <b>Signals Today:</b>\n"
+    text += f"   🔥 RARE: {counts.get('rare', 0)}\n"
+    text += f"   ⚡ HIGH: {counts.get('high', 0)}\n"
+    text += f"   📊 MEDIUM: {counts.get('medium', 0)}\n"
+    text += f"   📭 FREE sent: {counts.get('free_sent', 0)}\n"
+    text += f"   Total: {signals_today}\n\n"
+    
+    text += f"⏳ <b>Pending for FREE:</b> {len(pending) if pending else 0}\n"
+    text += f"   (delay: {FREE_SIGNAL_DELAY // 60} min)\n\n"
+    
+    if pending:
+        text += "<b>Pending signals:</b>\n"
+        for sig in pending[:5]:
+            text += f"   • {sig['pair']} {sig['side']} ({sig['signal_type']})\n"
+    
+    await message.answer(text, parse_mode="HTML")
+
+
 async def cmd_broadcast(message: types.Message):
     """Начать рассылку"""
     if message.from_user.id not in ADMIN_IDS:
@@ -1712,6 +1752,7 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_payout, commands=["payout"])
     dp.register_message_handler(cmd_limits, commands=["limits"])
     dp.register_message_handler(cmd_resetlimits, commands=["resetlimits"])
+    dp.register_message_handler(cmd_freestatus, commands=["freestatus"])
     dp.register_message_handler(cmd_cancel, commands=["cancel"])
     
     # Документы (для бэкапа)
