@@ -2039,10 +2039,15 @@ async def get_signals_sent_today() -> int:
 # ==================== FREE/PRO USER LISTS ====================
 
 async def get_pro_users() -> list:
-    """Получить список PRO юзеров (paid=1)"""
+    """Получить список PRO юзеров (paid=1 И подписка активна)"""
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT id FROM users WHERE paid = 1")
+        now = int(datetime.now().timestamp())
+        cursor = await conn.execute("""
+            SELECT id FROM users 
+            WHERE paid = 1 
+            AND (subscription_expiry IS NULL OR subscription_expiry > ?)
+        """, (now,))
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
     finally:
@@ -2050,10 +2055,20 @@ async def get_pro_users() -> list:
 
 
 async def get_free_users() -> list:
-    """Получить список FREE юзеров (paid=0)"""
+    """
+    Получить список FREE юзеров:
+    - paid = 0 (никогда не платил)
+    - paid = 1 но subscription_expiry истёк (бывший PRO/триал)
+    """
     conn = await db_pool.acquire()
     try:
-        cursor = await conn.execute("SELECT id FROM users WHERE paid = 0 OR paid IS NULL")
+        now = int(datetime.now().timestamp())
+        cursor = await conn.execute("""
+            SELECT id FROM users 
+            WHERE paid = 0 
+               OR paid IS NULL
+               OR (paid = 1 AND subscription_expiry IS NOT NULL AND subscription_expiry <= ?)
+        """, (now,))
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
     finally:
