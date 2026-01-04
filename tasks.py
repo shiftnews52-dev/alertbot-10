@@ -304,10 +304,16 @@ def _check_type_interval(signal_type: str) -> tuple:
 
 
 def _can_send_signal(signal_type: str) -> tuple:
-    """Проверка возможности отправки сигнала (лимит + временное окно + интервал)"""
+    """
+    Проверка возможности отправки сигнала PRO (лимит + временное окно + интервал)
+    
+    ВАЖНО: Лимиты RARE/HIGH применяются к PRO
+    Лимит MEDIUM НЕ применяется к PRO - они получают все MEDIUM
+    Лимит MEDIUM применяется только к FREE через can_send_signal(is_free=True)
+    """
     _reset_daily_counter()
     
-    # 1. Проверка дневного лимита
+    # 1. Проверка дневного лимита (только RARE и HIGH для PRO)
     if signal_type == 'RARE':
         if _daily_rare_count >= MAX_RARE_SIGNALS_PER_DAY:
             return False, "daily_limit_reached"
@@ -318,9 +324,7 @@ def _can_send_signal(signal_type: str) -> tuple:
         slot_ok, slot_reason = _is_high_slot_available()
         if not slot_ok:
             return False, slot_reason
-    elif signal_type == 'MEDIUM':
-        if _daily_medium_count >= MAX_MEDIUM_SIGNALS_PER_DAY:
-            return False, "daily_limit_reached"
+    # MEDIUM - БЕЗ лимита для PRO (лимит только для FREE)
     
     # 2. Проверка минимального интервала
     interval_ok, interval_reason = _check_type_interval(signal_type)
@@ -799,13 +803,16 @@ async def send_delayed_free_signals(bot: Bot):
     """
     try:
         # Проверяем лимит FREE
-        can_send, reason = await can_send_signal('MEDIUM', is_free=True)
-        if not can_send:
-            logger.debug(f"FREE signal blocked: {reason}")
-            return
+        can_send_free, reason = await can_send_signal('MEDIUM', is_free=True)
         
         # Получаем сигналы готовые к отправке FREE
         pending_signals = await get_pending_free_signals()
+        
+        # Логируем статус
+        logger.info(f"📭 FREE check: can_send={can_send_free}, pending={len(pending_signals) if pending_signals else 0}, reason={reason}")
+        
+        if not can_send_free:
+            return
         
         if not pending_signals:
             return
