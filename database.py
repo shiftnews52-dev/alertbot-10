@@ -152,7 +152,9 @@ async def init_db():
             )
         """)
         
-        # Таблица активных сигналов для tracking (updates)
+        # МИГРАЦИЯ: Удаляем старые таблицы и создаём новые с правильной структурой
+        # active_signals - для tracking
+        await conn.execute("DROP TABLE IF EXISTS active_signals")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS active_signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,7 +180,8 @@ async def init_db():
             )
         """)
         
-        # Таблица истории сигналов (для антидублирования)
+        # signal_history - для антидублирования
+        await conn.execute("DROP TABLE IF EXISTS signal_history")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS signal_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,7 +197,8 @@ async def init_db():
             )
         """)
         
-        # Таблица счётчиков сигналов за день (FREE)
+        # daily_signal_counts - счётчики за день
+        await conn.execute("DROP TABLE IF EXISTS daily_signal_counts")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_signal_counts (
                 date TEXT PRIMARY KEY,
@@ -204,6 +208,8 @@ async def init_db():
                 free_sent INTEGER DEFAULT 0
             )
         """)
+        
+        logger.info("✅ Signal tracking tables created/migrated")
         
         # Миграция: добавляем колонку username если нет
         try:
@@ -1801,6 +1807,31 @@ async def get_active_signals() -> list:
             'entry_hit': r[11], 'tp1_hit': r[12], 'tp2_hit': r[13],
             'tp3_hit': r[14], 'sl_hit': r[15], 'created_ts': r[16]
         } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_active_signal_by_pair(pair: str, side: str) -> dict:
+    """Получить активный сигнал по паре и направлению"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            SELECT id, pair, side, signal_type, entry_price, entry_min, entry_max,
+                   tp1, tp2, tp3, stop_loss
+            FROM active_signals
+            WHERE pair = ? AND side = ? AND status = 'active'
+            ORDER BY created_ts DESC
+            LIMIT 1
+        """, (pair, side))
+        row = await cursor.fetchone()
+        
+        if row:
+            return {
+                'id': row[0], 'pair': row[1], 'side': row[2], 'signal_type': row[3],
+                'entry_price': row[4], 'entry_min': row[5], 'entry_max': row[6],
+                'tp1': row[7], 'tp2': row[8], 'tp3': row[9], 'stop_loss': row[10]
+            }
+        return None
     finally:
         await db_pool.release(conn)
 
