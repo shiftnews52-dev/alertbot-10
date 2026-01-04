@@ -152,6 +152,59 @@ async def init_db():
             )
         """)
         
+        # Таблица активных сигналов для tracking (updates)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS active_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                side TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                entry_min REAL,
+                entry_max REAL,
+                tp1 REAL,
+                tp2 REAL,
+                tp3 REAL,
+                stop_loss REAL,
+                entry_hit INTEGER DEFAULT 0,
+                tp1_hit INTEGER DEFAULT 0,
+                tp2_hit INTEGER DEFAULT 0,
+                tp3_hit INTEGER DEFAULT 0,
+                sl_hit INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                created_ts INTEGER,
+                closed_ts INTEGER,
+                profit_percent REAL
+            )
+        """)
+        
+        # Таблица истории сигналов (для антидублирования)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                side TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                entry_price REAL NOT NULL,
+                confidence REAL,
+                created_ts INTEGER,
+                sent_to_pro INTEGER DEFAULT 0,
+                sent_to_free INTEGER DEFAULT 0,
+                free_send_ts INTEGER
+            )
+        """)
+        
+        # Таблица счётчиков сигналов за день (FREE)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_signal_counts (
+                date TEXT PRIMARY KEY,
+                rare_count INTEGER DEFAULT 0,
+                high_count INTEGER DEFAULT 0,
+                medium_count INTEGER DEFAULT 0,
+                free_sent INTEGER DEFAULT 0
+            )
+        """)
+        
         # Миграция: добавляем колонку username если нет
         try:
             await conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
@@ -1706,5 +1759,271 @@ async def get_referral_stats_full() -> dict:
             "total_pending": total_pending,
             "total_conversions": total_conversions
         }
+    finally:
+        await db_pool.release(conn)
+
+
+# ==================== SIGNAL TRACKING ====================
+
+async def add_active_signal(pair: str, side: str, signal_type: str, entry_price: float,
+                           entry_min: float, entry_max: float,
+                           tp1: float, tp2: float, tp3: float, stop_loss: float) -> int:
+    """Добавить активный сигнал для отслеживания"""
+    conn = await db_pool.acquire()
+    try:
+        created_ts = int(datetime.now().timestamp())
+        cursor = await conn.execute("""
+            INSERT INTO active_signals 
+            (pair, side, signal_type, entry_price, entry_min, entry_max, tp1, tp2, tp3, stop_loss, created_ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (pair, side, signal_type, entry_price, entry_min, entry_max, tp1, tp2, tp3, stop_loss, created_ts))
+        await conn.commit()
+        return cursor.lastrowid
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_active_signals() -> list:
+    """Получить все активные сигналы для tracking"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            SELECT id, pair, side, signal_type, entry_price, entry_min, entry_max,
+                   tp1, tp2, tp3, stop_loss, entry_hit, tp1_hit, tp2_hit, tp3_hit, sl_hit, created_ts
+            FROM active_signals
+            WHERE status = 'active'
+        """)
+        rows = await cursor.fetchall()
+        return [{
+            'id': r[0], 'pair': r[1], 'side': r[2], 'signal_type': r[3],
+            'entry_price': r[4], 'entry_min': r[5], 'entry_max': r[6],
+            'tp1': r[7], 'tp2': r[8], 'tp3': r[9], 'stop_loss': r[10],
+            'entry_hit': r[11], 'tp1_hit': r[12], 'tp2_hit': r[13],
+            'tp3_hit': r[14], 'sl_hit': r[15], 'created_ts': r[16]
+        } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def update_signal_status(signal_id: int, field: str, value: int = 1):
+    """Обновить статус сигнала (entry_hit, tp1_hit, tp2_hit, tp3_hit, sl_hit)"""
+    conn = await db_pool.acquire()
+    try:
+        await conn.execute(f"UPDATE active_signals SET {field} = ? WHERE id = ?", (value, signal_id))
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def close_signal(signal_id: int, profit_percent: float = None):
+    """Закрыть сигнал (по TP3 или SL)"""
+    conn = await db_pool.acquire()
+    try:
+        closed_ts = int(datetime.now().timestamp())
+        await conn.execute("""
+            UPDATE active_signals 
+            SET status = 'closed', closed_ts = ?, profit_percent = ?
+            WHERE id = ?
+        """, (closed_ts, profit_percent, signal_id))
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+# ==================== SIGNAL HISTORY (антидублирование) ====================
+
+async def add_signal_to_history(pair: str, side: str, signal_type: str, 
+                                entry_price: float, confidence: float) -> int:
+    """Добавить сигнал в историю"""
+    conn = await db_pool.acquire()
+    try:
+        created_ts = int(datetime.now().timestamp())
+        cursor = await conn.execute("""
+            INSERT INTO signal_history 
+            (pair, side, signal_type, entry_price, confidence, created_ts, sent_to_pro)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        """, (pair, side, signal_type, entry_price, confidence, created_ts))
+        await conn.commit()
+        return cursor.lastrowid
+    finally:
+        await db_pool.release(conn)
+
+
+async def mark_signal_sent_to_free(signal_id: int):
+    """Отметить что сигнал отправлен FREE юзерам"""
+    conn = await db_pool.acquire()
+    try:
+        free_send_ts = int(datetime.now().timestamp())
+        await conn.execute("""
+            UPDATE signal_history 
+            SET sent_to_free = 1, free_send_ts = ?
+            WHERE id = ?
+        """, (free_send_ts, signal_id))
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_pending_free_signals() -> list:
+    """Получить сигналы для отправки FREE (MEDIUM, прошло 45 мин)"""
+    from config import FREE_SIGNAL_DELAY
+    
+    conn = await db_pool.acquire()
+    try:
+        now = int(datetime.now().timestamp())
+        delay_threshold = now - FREE_SIGNAL_DELAY
+        
+        cursor = await conn.execute("""
+            SELECT id, pair, side, signal_type, entry_price, confidence, created_ts
+            FROM signal_history
+            WHERE signal_type = 'MEDIUM' 
+              AND sent_to_free = 0 
+              AND created_ts <= ?
+            ORDER BY created_ts ASC
+        """, (delay_threshold,))
+        rows = await cursor.fetchall()
+        return [{
+            'id': r[0], 'pair': r[1], 'side': r[2], 'signal_type': r[3],
+            'entry_price': r[4], 'confidence': r[5], 'created_ts': r[6]
+        } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def is_duplicate_signal(pair: str, side: str, entry_price: float, hours: int = 24) -> bool:
+    """Проверить не дубликат ли сигнал (та же пара, направление, похожая цена за последние N часов)"""
+    from config import PRICE_DUPLICATE_THRESHOLD
+    
+    conn = await db_pool.acquire()
+    try:
+        threshold_ts = int(datetime.now().timestamp()) - (hours * 3600)
+        
+        cursor = await conn.execute("""
+            SELECT entry_price FROM signal_history
+            WHERE pair = ? AND side = ? AND created_ts > ?
+            ORDER BY created_ts DESC
+            LIMIT 5
+        """, (pair, side, threshold_ts))
+        rows = await cursor.fetchall()
+        
+        for row in rows:
+            old_price = row[0]
+            price_diff = abs(entry_price - old_price) / old_price
+            if price_diff < PRICE_DUPLICATE_THRESHOLD:
+                return True
+        
+        return False
+    finally:
+        await db_pool.release(conn)
+
+
+# ==================== DAILY SIGNAL COUNTS ====================
+
+async def get_daily_counts() -> dict:
+    """Получить счётчики сигналов за сегодня"""
+    conn = await db_pool.acquire()
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor = await conn.execute(
+            "SELECT rare_count, high_count, medium_count, free_sent FROM daily_signal_counts WHERE date = ?",
+            (today,)
+        )
+        row = await cursor.fetchone()
+        
+        if row:
+            return {
+                'rare': row[0], 'high': row[1], 
+                'medium': row[2], 'free_sent': row[3]
+            }
+        return {'rare': 0, 'high': 0, 'medium': 0, 'free_sent': 0}
+    finally:
+        await db_pool.release(conn)
+
+
+async def increment_daily_count(signal_type: str, is_free: bool = False):
+    """Увеличить счётчик сигналов за день"""
+    conn = await db_pool.acquire()
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Создаём запись если нет
+        await conn.execute("""
+            INSERT OR IGNORE INTO daily_signal_counts (date) VALUES (?)
+        """, (today,))
+        
+        # Увеличиваем нужный счётчик
+        if is_free:
+            await conn.execute("""
+                UPDATE daily_signal_counts SET free_sent = free_sent + 1 WHERE date = ?
+            """, (today,))
+        else:
+            field = f"{signal_type.lower()}_count"
+            await conn.execute(f"""
+                UPDATE daily_signal_counts SET {field} = {field} + 1 WHERE date = ?
+            """, (today,))
+        
+        await conn.commit()
+    finally:
+        await db_pool.release(conn)
+
+
+async def can_send_signal(signal_type: str, is_free: bool = False) -> tuple:
+    """
+    Проверить можно ли отправить сигнал данного типа
+    
+    Returns:
+        (can_send: bool, reason: str)
+    """
+    from config import (
+        MAX_RARE_SIGNALS_PER_DAY, MAX_HIGH_SIGNALS_PER_DAY, 
+        MAX_MEDIUM_SIGNALS_PER_DAY, FREE_MAX_SIGNALS_PER_DAY
+    )
+    
+    counts = await get_daily_counts()
+    
+    if is_free:
+        if counts['free_sent'] >= FREE_MAX_SIGNALS_PER_DAY:
+            return False, f"FREE limit reached ({FREE_MAX_SIGNALS_PER_DAY}/day)"
+        return True, "OK"
+    
+    if signal_type == 'RARE':
+        if counts['rare'] >= MAX_RARE_SIGNALS_PER_DAY:
+            return False, f"RARE limit reached ({MAX_RARE_SIGNALS_PER_DAY}/day)"
+    elif signal_type == 'HIGH':
+        if counts['high'] >= MAX_HIGH_SIGNALS_PER_DAY:
+            return False, f"HIGH limit reached ({MAX_HIGH_SIGNALS_PER_DAY}/day)"
+    elif signal_type == 'MEDIUM':
+        if counts['medium'] >= MAX_MEDIUM_SIGNALS_PER_DAY:
+            return False, f"MEDIUM limit reached ({MAX_MEDIUM_SIGNALS_PER_DAY}/day)"
+    
+    return True, "OK"
+
+
+async def get_signals_sent_today() -> int:
+    """Получить количество сигналов отправленных сегодня (для 'нет сигналов')"""
+    counts = await get_daily_counts()
+    return counts['rare'] + counts['high'] + counts['medium']
+
+
+# ==================== FREE/PRO USER LISTS ====================
+
+async def get_pro_users() -> list:
+    """Получить список PRO юзеров (paid=1)"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT id FROM users WHERE paid = 1")
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_free_users() -> list:
+    """Получить список FREE юзеров (paid=0)"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("SELECT id FROM users WHERE paid = 0 OR paid IS NULL")
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
     finally:
         await db_pool.release(conn)
