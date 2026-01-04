@@ -168,69 +168,68 @@ async def show_main_menu(message: types.Message, lang: str, paid: bool, is_start
     
     if lang == "en":
         if paid:
-            text = "✅ <b>Premium Access Activated</b>\n\n"
+            text = "✅ <b>PRO Access Activated</b>\n\n"
             text += "You're inside the system.\n"
             text += "Now your task is to follow signals and manage risk,\n"
             text += "not guess the market.\n\n"
             text += "🔔 <b>What's working for you:</b>\n"
-            text += "• 3–5 quality signals every day\n"
-            text += "• Multi-strategy analysis\n"
-            text += "• Clear entry, TP and SL levels\n"
-            text += "• Only liquid coins\n"
-            text += "• 24/7 market monitoring\n\n"
+            text += "• 🔥 RARE signals (best setups)\n"
+            text += "• ⚡ HIGH signals\n"
+            text += "• 📊 All MEDIUM signals instantly\n"
+            text += "• Full TP1/TP2/TP3 + Stop Loss\n"
+            text += "• Auto updates (entry, TP hit, SL)\n\n"
             text += "🧠 <b>Important:</b>\n"
             text += "Signals are a tool.\n"
             text += "Discipline makes profit.\n\n"
             text += "👇 Choose action:"
         else:
-            text = "🎯 <b>Alert Bot</b>\n\n"
-            text += "Clear entries. Risk control. Discipline.\n"
-            text += "Automated crypto signals for those\n"
-            text += "who want to trade systematically, not emotionally.\n\n"
-            text += "🚀 <b>What you get:</b>\n"
-            text += "• 3–5 well-thought signals per day\n"
-            text += "• Multi-strategy market analysis\n"
-            text += "• Ready entry, TP and SL levels\n"
-            text += "• Only liquid coins (up to 10)\n"
-            text += "• 24/7 market monitoring\n\n"
-            text += "🧠 No guessing. No chaos. Only plan.\n\n"
+            # FREE ACCESS
+            text = "📊 <b>FREE Access Active</b>\n\n"
+            text += "You have free access to trading signals!\n\n"
+            text += "✅ <b>Your FREE plan:</b>\n"
+            text += "• 1 MEDIUM signal per day\n"
+            text += "• 45 min delay after PRO\n"
+            text += "• Entry + TP1 only\n\n"
+            text += "💎 <b>Upgrade to PRO:</b>\n"
+            text += "• 🔥 RARE signals (best setups)\n"
+            text += "• ⚡ HIGH signals\n"
+            text += "• All signals instantly\n"
+            text += "• Full TP1/TP2/TP3 + Stop Loss\n"
+            text += "• Auto updates when TP/SL hit\n\n"
             text += "🎁 <b>Have a promo code?</b>\n"
-            text += "Just send it and get special access.\n\n"
-            text += "💰 Get premium access and trade\n"
-            text += "by strategy, not by luck."
+            text += "Just send it to get special access."
     else:
         if paid:
-            text = "✅ <b>Премиум-доступ активирован</b>\n\n"
+            text = "✅ <b>PRO доступ активирован</b>\n\n"
             text += "Ты внутри системы.\n"
             text += "Теперь твоя задача — следовать сигналам и управлять риском,\n"
             text += "а не угадывать рынок.\n\n"
-            text += "🔔 <b>Что уже работает для тебя:</b>\n"
-            text += "• 3–5 качественных сигналов каждый день\n"
-            text += "• Мультистратегия анализа\n"
-            text += "• Чёткие уровни входа, TP и SL\n"
-            text += "• Только ликвидные монеты\n"
-            text += "• Мониторинг рынка 24/7\n\n"
+            text += "🔔 <b>Что работает для тебя:</b>\n"
+            text += "• 🔥 RARE сигналы (лучшие сетапы)\n"
+            text += "• ⚡ HIGH сигналы\n"
+            text += "• 📊 Все MEDIUM сигналы сразу\n"
+            text += "• Полные TP1/TP2/TP3 + Stop Loss\n"
+            text += "• Авто-апдейты (вход, TP, SL)\n\n"
             text += "🧠 <b>Важно:</b>\n"
             text += "Сигналы — это инструмент.\n"
             text += "Прибыль делает дисциплина.\n\n"
             text += "👇 Выбери действие:"
         else:
-            text = "🎯 <b>Alert Bot</b>\n\n"
-            text += "Чёткие входы. Контроль риска. Дисциплина.\n"
-            text += "Автоматические крипто-сигналы для тех,\n"
-            text += "кто хочет торговать системно, а не на эмоциях.\n\n"
-            text += "🚀 <b>Что ты получаешь:</b>\n"
-            text += "• 3–5 продуманных сигналов в день\n"
-            text += "• Анализ рынка по нескольким стратегиям\n"
-            text += "• Готовые уровни входа, TP и SL\n"
-            text += "• Только ликвидные монеты (до 10)\n"
-            text += "• Мониторинг рынка 24/7, без пропусков\n\n"
-            text += "🧠 Без угадываний. Без хаоса. Только план.\n\n"
+            # FREE ACCESS
+            text = "📊 <b>FREE доступ активен</b>\n\n"
+            text += "У тебя есть бесплатный доступ к сигналам!\n\n"
+            text += "✅ <b>Твой FREE план:</b>\n"
+            text += "• 1 MEDIUM сигнал в день\n"
+            text += "• Задержка 45 мин после PRO\n"
+            text += "• Только Entry + TP1\n\n"
+            text += "💎 <b>Преимущества PRO:</b>\n"
+            text += "• 🔥 RARE сигналы (лучшие сетапы)\n"
+            text += "• ⚡ HIGH сигналы\n"
+            text += "• Все сигналы мгновенно\n"
+            text += "• Полные TP1/TP2/TP3 + Stop Loss\n"
+            text += "• Авто-апдейты при достижении TP/SL\n\n"
             text += "🎁 <b>Есть промокод?</b>\n"
-            text += "Просто отправь его боту и получи\n"
-            text += "доступ на специальных условиях.\n\n"
-            text += "💰 Открой премиум-доступ и торгуй\n"
-            text += "по стратегии, а не на удачу."
+            text += "Просто отправь его и получи доступ."
     
     kb = InlineKeyboardMarkup(row_width=2)
     
@@ -254,9 +253,10 @@ async def show_main_menu(message: types.Message, lang: str, paid: bool, is_start
                 InlineKeyboardButton("💬 Поддержка", callback_data="menu_support")
             )
     else:
+        # FREE юзеры - кнопка Upgrade
         if lang == "en":
             kb.add(
-                InlineKeyboardButton("🔓 Get Access", callback_data="menu_pay"),
+                InlineKeyboardButton("💎 Upgrade to PRO", callback_data="menu_pay"),
                 InlineKeyboardButton("📚 Guide", callback_data="menu_guide")
             )
             kb.add(
@@ -265,7 +265,7 @@ async def show_main_menu(message: types.Message, lang: str, paid: bool, is_start
             )
         else:
             kb.add(
-                InlineKeyboardButton("🔓 Получить доступ", callback_data="menu_pay"),
+                InlineKeyboardButton("💎 Перейти на PRO", callback_data="menu_pay"),
                 InlineKeyboardButton("📚 Инструкция", callback_data="menu_guide")
             )
             kb.add(
