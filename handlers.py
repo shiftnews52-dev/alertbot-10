@@ -1266,9 +1266,11 @@ async def cmd_addmanager(message: types.Message):
                 text += f"📝 Код: <code>{code}</code>\n"
                 if name:
                     text += f"👤 Имя: {name}\n"
-                text += f"\n🔗 <b>Ссылка для партнёров:</b>\n<code>{link}</code>\n\n"
+                text += f"\n🔗 <b>Ссылка для партнёров:</b>\n"
+                text += f"<a href=\"{link}\">{link}</a>\n\n"
+                text += f"📋 Копировать: <code>{link}</code>\n\n"
                 text += "Отправь эту ссылку менеджеру. Все кто перейдут по ней станут партнёрами."
-                await message.answer(text, parse_mode="HTML")
+                await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
             else:
                 await message.answer(f"❌ Код '{code}' уже занят. Выбери другой.")
         else:
@@ -1348,9 +1350,11 @@ async def cmd_addtrack(message: types.Message):
                 text += f"📝 Код: <code>{code}</code>\n"
                 if name:
                     text += f"📋 Название: {name}\n"
-                text += f"\n🔗 <b>Ссылка:</b>\n<code>{link}</code>\n\n"
+                text += f"\n🔗 <b>Ссылка:</b>\n"
+                text += f"<a href=\"{link}\">{link}</a>\n\n"
+                text += f"📋 Копировать: <code>{link}</code>\n\n"
                 text += "Используй эту ссылку в рекламе для отслеживания конверсий."
-                await message.answer(text, parse_mode="HTML")
+                await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
             else:
                 await message.answer(f"❌ Код '{code}' уже занят. Выбери другой.")
         else:
@@ -1406,12 +1410,13 @@ async def cmd_tracks(message: types.Message):
         text += f"   👤 Регистрации: {link['registrations']} ({click_to_reg:.1f}%)\n"
         text += f"   💰 Покупки: {link['purchases']} ({reg_to_purchase:.1f}%)\n"
         text += f"   💵 Доход: ${link['revenue']:.2f}\n"
-        text += f"   📎 <code>t.me/{bot_username}?start=t_{link['code']}</code>\n\n"
+        link_url = f"https://t.me/{bot_username}?start=t_{link['code']}"
+        text += f"   🔗 <a href=\"{link_url}\">Открыть</a> | <code>{link_url}</code>\n\n"
     
     text += "Подробнее: /trackstats CODE\n"
     text += "Удалить: /deltrack CODE"
     
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def cmd_trackstats(message: types.Message):
@@ -1461,10 +1466,11 @@ async def cmd_trackstats(message: types.Message):
                 text += f"Доход/рег: ${cpr:.2f}\n"
             
             text += f"\n<b>🔗 Ссылка:</b>\n"
-            text += f"<code>https://t.me/{bot_username}?start=t_{stats['code']}</code>\n\n"
+            link_url = f"https://t.me/{bot_username}?start=t_{stats['code']}"
+            text += f"<a href=\"{link_url}\">Открыть</a> | <code>{link_url}</code>\n\n"
             text += f"📅 Создана: {created}"
             
-            await message.answer(text, parse_mode="HTML")
+            await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
         else:
             await message.answer("❌ Формат: /trackstats CODE\n\nПример: /trackstats insta")
     except Exception as e:
