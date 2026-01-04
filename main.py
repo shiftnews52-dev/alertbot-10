@@ -13,7 +13,7 @@ from database import init_db, close_db
 from handlers import setup_handlers
 from crypto_payment import handle_crypto_webhook
 # СИСТЕМА 2: Professional Analyzer
-from tasks import price_collector, signal_analyzer, subscription_manager
+from tasks import price_collector, signal_analyzer, subscription_manager, signal_tracker, no_signals_notifier
 from pnl_tracker import pnl_tracker
 from pnl_tasks import track_signals_pnl
 
@@ -128,6 +128,14 @@ async def main():
         # Запуск менеджера подписок (напоминания, промо)
         asyncio.create_task(subscription_manager(bot))
         logger.info("✅ Subscription manager started")
+        
+        # Запуск Signal Tracker (автоматические updates)
+        asyncio.create_task(signal_tracker(bot))
+        logger.info("✅ Signal tracker started (auto updates)")
+        
+        # Запуск "Нет сигналов" notifier
+        asyncio.create_task(no_signals_notifier(bot))
+        logger.info("✅ No signals notifier started")
         
         # Запуск бота
         await dp.start_polling()
