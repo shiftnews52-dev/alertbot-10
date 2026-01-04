@@ -90,9 +90,11 @@ async def cmd_start(message: types.Message):
     # Парсим ссылку:
     # ref123456 — реферальная ссылка партнёра
     # mgr_CODE — ссылка менеджера (CODE = текстовый код)
+    # t_CODE — трекинг ссылка (для рекламы)
     args = message.get_args()
     referrer_id = None
     manager_code = None
+    track_code = None
     
     if args:
         if args.startswith("ref"):
@@ -104,10 +106,22 @@ async def cmd_start(message: types.Message):
         elif args.startswith("mgr_"):
             manager_code = args[4:]  # mgr_john → john
             logger.info(f"Manager link detected: user {user_id} from manager code '{manager_code}'")
+        elif args.startswith("t_"):
+            track_code = args[2:]  # t_insta → insta
+            logger.info(f"Tracking link detected: user {user_id} from track code '{track_code}'")
+            # Фиксируем клик
+            from database import track_click
+            await track_click(track_code)
     
     # Новый пользователь
     if not await user_exists(user_id):
         await add_user(user_id, "ru", invited_by=referrer_id, username=username)
+        
+        # Трекинг: фиксируем регистрацию
+        if track_code:
+            from database import track_registration
+            await track_registration(track_code, user_id)
+            logger.info(f"✅ Tracking registration: {user_id} from '{track_code}'")
         
         # Если пришёл по ссылке менеджера → становится партнёром
         if manager_code:
@@ -1302,6 +1316,197 @@ async def cmd_delmanager(message: types.Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+# ==================== ТРЕКИНГ ССЫЛКИ (РЕКЛАМА) ====================
+
+async def cmd_addtrack(message: types.Message):
+    """Создать трекинг-ссылку: /addtrack CODE [NAME]"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split(maxsplit=2)
+        if len(parts) >= 2:
+            code = parts[1].lower().strip()
+            name = parts[2] if len(parts) > 2 else None
+            
+            # Валидация кода
+            if not code.isalnum() or len(code) < 2 or len(code) > 20:
+                await message.answer("❌ Код должен быть 2-20 символов (буквы и цифры)")
+                return
+            
+            from database import create_tracking_link
+            
+            bot = Bot.get_current()
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username
+            
+            success = await create_tracking_link(code, name)
+            
+            if success:
+                link = f"https://t.me/{bot_username}?start=t_{code}"
+                text = f"✅ <b>Трекинг-ссылка создана!</b>\n\n"
+                text += f"📝 Код: <code>{code}</code>\n"
+                if name:
+                    text += f"📋 Название: {name}\n"
+                text += f"\n🔗 <b>Ссылка:</b>\n<code>{link}</code>\n\n"
+                text += "Используй эту ссылку в рекламе для отслеживания конверсий."
+                await message.answer(text, parse_mode="HTML")
+            else:
+                await message.answer(f"❌ Код '{code}' уже занят. Выбери другой.")
+        else:
+            await message.answer(
+                "📊 <b>ТРЕКИНГ-ССЫЛКИ</b>\n\n"
+                "<b>Формат:</b> /addtrack CODE [NAME]\n\n"
+                "<b>Примеры:</b>\n"
+                "<code>/addtrack insta</code>\n"
+                "<code>/addtrack tiktok TikTok Ads</code>\n"
+                "<code>/addtrack fb Facebook Campaign</code>\n\n"
+                "CODE — уникальный код (2-20 символов)\n"
+                "NAME — название для себя (опционально)",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_tracks(message: types.Message):
+    """Список всех трекинг-ссылок: /tracks"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    from database import get_all_tracking_links
+    
+    links = await get_all_tracking_links()
+    
+    if not links:
+        await message.answer(
+            "📊 <b>Трекинг-ссылки</b>\n\n"
+            "Пока нет ссылок.\n\n"
+            "Создать: /addtrack CODE [NAME]",
+            parse_mode="HTML"
+        )
+        return
+    
+    bot = Bot.get_current()
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+    
+    text = "📊 <b>ТРЕКИНГ-ССЫЛКИ</b>\n\n"
+    
+    for link in links:
+        # Рассчитываем конверсии
+        click_to_reg = (link['registrations'] / link['clicks'] * 100) if link['clicks'] > 0 else 0
+        reg_to_purchase = (link['purchases'] / link['registrations'] * 100) if link['registrations'] > 0 else 0
+        
+        text += f"🔗 <b>{link['code']}</b>"
+        if link['name']:
+            text += f" ({link['name']})"
+        text += f"\n"
+        text += f"   👆 Клики: {link['clicks']}\n"
+        text += f"   👤 Регистрации: {link['registrations']} ({click_to_reg:.1f}%)\n"
+        text += f"   💰 Покупки: {link['purchases']} ({reg_to_purchase:.1f}%)\n"
+        text += f"   💵 Доход: ${link['revenue']:.2f}\n"
+        text += f"   📎 <code>t.me/{bot_username}?start=t_{link['code']}</code>\n\n"
+    
+    text += "Подробнее: /trackstats CODE\n"
+    text += "Удалить: /deltrack CODE"
+    
+    await message.answer(text, parse_mode="HTML")
+
+
+async def cmd_trackstats(message: types.Message):
+    """Подробная статистика по ссылке: /trackstats CODE"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            code = parts[1].lower().strip()
+            
+            from database import get_tracking_stats
+            
+            stats = await get_tracking_stats(code)
+            
+            if not stats:
+                await message.answer(f"❌ Ссылка '{code}' не найдена")
+                return
+            
+            bot = Bot.get_current()
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username
+            
+            from datetime import datetime
+            created = datetime.fromtimestamp(stats['created_ts']).strftime('%d.%m.%Y %H:%M')
+            
+            text = f"📊 <b>СТАТИСТИКА: {stats['code']}</b>\n"
+            if stats['name']:
+                text += f"📋 {stats['name']}\n"
+            text += f"\n"
+            
+            text += f"<b>📈 Воронка:</b>\n"
+            text += f"👆 Клики: <b>{stats['clicks']}</b>\n"
+            text += f"   ↓ {stats['click_to_reg']:.1f}%\n"
+            text += f"👤 Регистрации: <b>{stats['registrations']}</b>\n"
+            text += f"   ↓ {stats['reg_to_purchase']:.1f}%\n"
+            text += f"💰 Покупки: <b>{stats['purchases']}</b>\n\n"
+            
+            text += f"<b>💵 Финансы:</b>\n"
+            text += f"Доход: <b>${stats['revenue']:.2f}</b>\n"
+            if stats['clicks'] > 0:
+                cpc = stats['revenue'] / stats['clicks']
+                text += f"Доход/клик: ${cpc:.2f}\n"
+            if stats['registrations'] > 0:
+                cpr = stats['revenue'] / stats['registrations']
+                text += f"Доход/рег: ${cpr:.2f}\n"
+            
+            text += f"\n<b>🔗 Ссылка:</b>\n"
+            text += f"<code>https://t.me/{bot_username}?start=t_{stats['code']}</code>\n\n"
+            text += f"📅 Создана: {created}"
+            
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer("❌ Формат: /trackstats CODE\n\nПример: /trackstats insta")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def cmd_deltrack(message: types.Message):
+    """Удалить трекинг-ссылку: /deltrack CODE"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) >= 2:
+            code = parts[1].lower().strip()
+            
+            from database import get_tracking_link, delete_tracking_link
+            
+            link = await get_tracking_link(code)
+            if not link:
+                await message.answer(f"❌ Ссылка '{code}' не найдена")
+                return
+            
+            await delete_tracking_link(code)
+            
+            text = f"✅ <b>Ссылка удалена!</b>\n\n"
+            text += f"📝 Код: {code}\n"
+            if link['name']:
+                text += f"📋 Название: {link['name']}\n"
+            text += f"\n<b>Итоговая статистика:</b>\n"
+            text += f"👆 Клики: {link['clicks']}\n"
+            text += f"👤 Регистрации: {link['registrations']}\n"
+            text += f"💰 Покупки: {link['purchases']}\n"
+            text += f"💵 Доход: ${link['revenue']:.2f}"
+            
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer("❌ Формат: /deltrack CODE\n\nПример: /deltrack insta")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
 async def cmd_addbalance(message: types.Message):
     """
     Начислить баланс пользователю: /addbalance ID AMOUNT
@@ -1743,6 +1948,12 @@ def setup_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_revoke, commands=["revoke"])
     dp.register_message_handler(cmd_addmanager, commands=["addmanager"])
     dp.register_message_handler(cmd_delmanager, commands=["delmanager"])
+    
+    # Трекинг-ссылки (реклама)
+    dp.register_message_handler(cmd_addtrack, commands=["addtrack"])
+    dp.register_message_handler(cmd_tracks, commands=["tracks"])
+    dp.register_message_handler(cmd_trackstats, commands=["trackstats"])
+    dp.register_message_handler(cmd_deltrack, commands=["deltrack"])
     dp.register_message_handler(cmd_addbalance, commands=["addbalance"])
     dp.register_message_handler(cmd_testsplit, commands=["testsplit"])
     dp.register_message_handler(cmd_broadcast, commands=["broadcast"])
