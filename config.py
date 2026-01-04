@@ -1,11 +1,15 @@
 """
-config.py - RARE/HIGH/MEDIUM система сигналов
+config.py - PRO/FREE система сигналов
 
-ПОРОГИ CONFIDENCE:
-- 🔥 RARE: ≥95% (без лимита)
-- ⚡ HIGH: 80-94% (макс 3/день)
-- 📊 MEDIUM: 70-79% (макс 8/день)
-- <70% - игнор
+PRO доступ:
+- 🔥 RARE: ≥95% — макс 1/день
+- ⚡ HIGH: 80-94% — макс 2/день
+- Без задержки, полная информация
+
+FREE доступ (постоянный):
+- 📊 MEDIUM: 70-79% — макс 1/день
+- Задержка 45 минут
+- Скрыты TP2, TP3, Stop Loss
 
 COOLDOWN:
 - 3 часа на пару
@@ -79,9 +83,9 @@ BB_STD = 2
 
 # ==================== НАСТРОЙКИ СИГНАЛОВ ====================
 # Пороги confidence:
-# RARE: ≥95% - без лимита
-# HIGH: 80-94% - макс 3/день
-# MEDIUM: 70-79% - макс 8/день
+# RARE: ≥95% - PRO only, макс 1/день
+# HIGH: 80-94% - PRO only, макс 2/день
+# MEDIUM: 70-79% - FREE (с задержкой), PRO сразу
 # <70% - игнор
 
 RARE_CONFIDENCE = 95          # RARE порог
@@ -92,11 +96,22 @@ MIN_SIGNAL_SCORE = 70         # Синоним MIN_CONFIDENCE
 ENTRY_ZONE_PERCENT = 1.0      # ±1.0%
 STOP_PERCENT = 2.0            # 2.0%
 
-# ==================== ЛИМИТЫ НА СИГНАЛЫ ====================
+# ==================== ЛИМИТЫ НА СИГНАЛЫ (НОВАЯ ЛОГИКА) ====================
+# PRO: видит RARE + HIGH + MEDIUM сразу
+# FREE: видит только MEDIUM с задержкой
+
 MAX_SIGNALS_PER_DAY = 3           # На ОДНУ пару
-MAX_RARE_SIGNALS_PER_DAY = 999    # RARE - без лимита (фактически)
-MAX_HIGH_SIGNALS_PER_DAY = 3      # HIGH - макс 3/день
-MAX_MEDIUM_SIGNALS_PER_DAY = 8    # MEDIUM - макс 8/день
+MAX_RARE_SIGNALS_PER_DAY = 1      # 🔥 RARE — макс 1/день
+MAX_HIGH_SIGNALS_PER_DAY = 2      # ⚡ HIGH — макс 2/день
+MAX_MEDIUM_SIGNALS_PER_DAY = 1    # 📊 MEDIUM — макс 1/день (для FREE)
+
+# ==================== FREE ДОСТУП ====================
+FREE_SIGNAL_DELAY = 45 * 60       # Задержка 45 минут (в секундах)
+FREE_MAX_SIGNALS_PER_DAY = 1      # FREE видит макс 1 сигнал/день
+FREE_SHOW_TP1 = True              # FREE видит TP1
+FREE_SHOW_TP2 = False             # FREE НЕ видит TP2
+FREE_SHOW_TP3 = False             # FREE НЕ видит TP3
+FREE_SHOW_SL = False              # FREE НЕ видит Stop Loss
 
 # ==================== COOLDOWN ====================
 COOLDOWN_HOURS_PER_PAIR = 3       # 3 часа между сигналами одной пары
@@ -120,6 +135,16 @@ SIGNAL_QUEUE_TTL = 60        # 1 час
 
 # Максимальное отклонение цены для актуальности сигнала (%)
 SIGNAL_PRICE_TOLERANCE = 2.0  # 2% от entry price
+
+# ==================== SIGNAL TRACKING (UPDATES) ====================
+# Автоматическое отслеживание: вход, TP1, TP2, TP3, SL
+TRACKING_ENABLED = True
+TRACKING_CHECK_INTERVAL = 60      # Проверка каждые 60 секунд
+ENTRY_ACTIVATION_TOLERANCE = 0.5  # Вход активирован если цена в пределах 0.5%
+
+# ==================== "НЕТ СИГНАЛОВ" СООБЩЕНИЕ ====================
+NO_SIGNALS_MESSAGE_ENABLED = True
+NO_SIGNALS_HOUR_UTC = 20          # Отправлять в 20:00 UTC если не было сигналов
 
 # ==================== ПРОМО И НАПОМИНАНИЯ ====================
 # Напоминание за N дней до истечения
@@ -182,14 +207,12 @@ RENEWAL_BONUS_MANAGER = 0.0      # 0 за продление
 MIN_WITHDRAWAL = 20.0            # Минимум для вывода
 
 # ==================== STARTUP INFO ====================
-print(f"✅ Config loaded (RARE/HIGH/MEDIUM + Time Distribution):")
+print(f"✅ Config loaded (PRO/FREE система):")
 print(f"   - Admin IDs: {ADMIN_IDS}")
 print(f"   - DB Path: {DB_PATH}")
 print(f"   - Pairs: {len(DEFAULT_PAIRS)}")
-print(f"   - 🔥 RARE: ≥{RARE_CONFIDENCE}% (no limit)")
-print(f"   - ⚡ HIGH: {HIGH_CONFIDENCE}-{RARE_CONFIDENCE-1}% (max {MAX_HIGH_SIGNALS_PER_DAY}/day, 3 time slots)")
-print(f"   - 📊 MEDIUM: {MIN_CONFIDENCE}-{HIGH_CONFIDENCE-1}% (max {MAX_MEDIUM_SIGNALS_PER_DAY}/day)")
+print(f"   - 🔥 RARE: ≥{RARE_CONFIDENCE}% (PRO, max {MAX_RARE_SIGNALS_PER_DAY}/day)")
+print(f"   - ⚡ HIGH: {HIGH_CONFIDENCE}-{RARE_CONFIDENCE-1}% (PRO, max {MAX_HIGH_SIGNALS_PER_DAY}/day)")
+print(f"   - 📊 MEDIUM: {MIN_CONFIDENCE}-{HIGH_CONFIDENCE-1}% (FREE delayed {FREE_SIGNAL_DELAY//60}min, max {FREE_MAX_SIGNALS_PER_DAY}/day)")
 print(f"   - Cooldown: {COOLDOWN_HOURS_PER_PAIR}h per pair")
-print(f"   - Intervals: RARE={MIN_INTERVAL_RARE}min, HIGH={MIN_INTERVAL_HIGH}min, MEDIUM={MIN_INTERVAL_MEDIUM}min")
-print(f"   - HIGH slots (UTC): {HIGH_TIME_SLOTS}")
-print(f"   - Queue TTL: {SIGNAL_QUEUE_TTL}min")
+print(f"   - Tracking: {'ON' if TRACKING_ENABLED else 'OFF'}")
