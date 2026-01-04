@@ -1,25 +1,31 @@
 """
-tasks.py - RARE/HIGH/MEDIUM система сигналов с распределением по времени
+tasks.py - PRO/FREE система сигналов
 
-Пороги:
-- 🔥 RARE: ≥95% (без лимита)
-- ⚡ HIGH: 80-94% (макс 3/день, по временным окнам)
-- 📊 MEDIUM: 70-79% (макс 8/день, интервал 90 мин)
-- <70% - игнор
+PRO доступ:
+- 🔥 RARE: ≥95% — макс 1/день, сразу
+- ⚡ HIGH: 80-94% — макс 2/день, сразу
+- 📊 MEDIUM: 70-79% — сразу (полная версия)
 
-Распределение:
-- HIGH: 3 временных окна (утро/день/вечер)
-- MEDIUM: минимум 90 минут между сигналами
-- Очередь для отложенных сигналов
+FREE доступ (постоянный):
+- 📊 MEDIUM только — макс 1/день
+- Задержка 45 минут
+- Скрыты: TP2, TP3, Stop Loss
+- Байт-сообщение после сигнала
+
+Signal Tracking:
+- Автоматические updates (вход, TP1, TP2, TP3, SL)
+- Сообщение "нет сигналов" если 0 за день
 """
 import time
 import asyncio
 import logging
+import random
 from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Optional, Dict, List
 import httpx
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.exceptions import RetryAfter, TelegramAPIError
 
 from config import (
@@ -29,11 +35,18 @@ from config import (
     RARE_CONFIDENCE, HIGH_CONFIDENCE, MIN_CONFIDENCE,
     MAX_RARE_SIGNALS_PER_DAY, MAX_HIGH_SIGNALS_PER_DAY, MAX_MEDIUM_SIGNALS_PER_DAY,
     HIGH_TIME_SLOTS, MIN_INTERVAL_RARE, MIN_INTERVAL_HIGH, MIN_INTERVAL_MEDIUM,
-    SIGNAL_QUEUE_TTL, SIGNAL_PRICE_TOLERANCE
+    SIGNAL_QUEUE_TTL, SIGNAL_PRICE_TOLERANCE,
+    FREE_SIGNAL_DELAY, FREE_MAX_SIGNALS_PER_DAY,
+    TRACKING_ENABLED, NO_SIGNALS_MESSAGE_ENABLED, NO_SIGNALS_HOUR_UTC
 )
 from database import (
     get_all_tracked_pairs, get_pairs_with_users,
-    count_signals_today, log_signal, get_all_user_ids, get_user_lang
+    count_signals_today, log_signal, get_all_user_ids, get_user_lang,
+    get_pro_users, get_free_users, get_users_by_lang,
+    add_active_signal, get_active_signals, update_signal_status, close_signal,
+    add_signal_to_history, mark_signal_sent_to_free, get_pending_free_signals,
+    is_duplicate_signal, get_daily_counts, increment_daily_count, can_send_signal,
+    get_signals_sent_today
 )
 from indicators import CANDLES, fetch_price, fetch_candles_binance
 from professional_analyzer import CryptoMickyAnalyzer
@@ -43,14 +56,85 @@ logger = logging.getLogger(__name__)
 crypto_micky_analyzer = CryptoMickyAnalyzer()
 
 
-def format_signal(signal: dict, signal_type: str, lang: str = "ru") -> str:
+# ==================== БАЙТ-СООБЩЕНИЯ ДЛЯ FREE ====================
+UPSELL_MESSAGES_RU = [
+    """💎 <b>PRO пользователи получили этот сигнал 45 минут назад</b>
+и уже видят TP2, TP3 и Stop Loss
+
+→ Не упускай лучшие входы""",
+
+    """🔥 <b>Этот сигнал в PRO был отправлен раньше</b>
++ полные цели + защитный стоп
+
+Пока ты ждёшь — другие уже в позиции""",
+
+    """⚡ <b>FREE = 1 сигнал/день с задержкой</b>
+PRO = все сигналы сразу + RARE + HIGH
+
+Разница ощущается на балансе 💰""",
+
+    """🎯 <b>В PRO версии ты бы уже знал:</b>
+• Куда ставить стоп
+• Где фиксировать прибыль
+• Весь план сделки""",
+
+    """⏰ <b>45 минут — это много на рынке</b>
+
+PRO получают сигналы мгновенно
++ RARE сигналы (лучшие сетапы)
++ Полную информацию""",
+
+    """📊 <b>FREE показывает стиль</b>
+PRO даёт контроль
+
+Один пропущенный RARE = потерянная прибыль""",
+]
+
+UPSELL_MESSAGES_EN = [
+    """💎 <b>PRO users got this signal 45 minutes ago</b>
+and already see TP2, TP3 and Stop Loss
+
+→ Don't miss the best entries""",
+
+    """🔥 <b>This signal was sent to PRO earlier</b>
++ full targets + protective stop
+
+While you wait — others are already in position""",
+
+    """⚡ <b>FREE = 1 signal/day with delay</b>
+PRO = all signals instantly + RARE + HIGH
+
+The difference shows in your balance 💰""",
+
+    """🎯 <b>In PRO you would already know:</b>
+• Where to set stop
+• Where to take profit
+• The complete trade plan""",
+
+    """⏰ <b>45 minutes is a lot in the market</b>
+
+PRO gets signals instantly
++ RARE signals (best setups)
++ Full information""",
+
+    """📊 <b>FREE shows the style</b>
+PRO gives control
+
+One missed RARE = lost profit""",
+]
+
+
+def get_upsell_message(lang: str = "ru") -> str:
+    """Получить случайное байт-сообщение"""
+    messages = UPSELL_MESSAGES_RU if lang == "ru" else UPSELL_MESSAGES_EN
+    return random.choice(messages)
+
+
+# ==================== ФОРМАТИРОВАНИЕ СИГНАЛОВ ====================
+
+def format_signal_pro(signal: dict, signal_type: str, lang: str = "ru") -> str:
     """
-    Форматирование сигнала на нужном языке
-    
-    Args:
-        signal: данные сигнала
-        signal_type: 'RARE', 'HIGH', 'MEDIUM'
-        lang: 'ru' или 'en'
+    Форматирование ПОЛНОГО сигнала для PRO
     """
     # Бейдж типа
     if signal_type == 'RARE':
@@ -64,52 +148,65 @@ def format_signal(signal: dict, signal_type: str, lang: str = "ru") -> str:
     entry_min, entry_max = signal['entry_zone']
     
     if lang == "en":
-        text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
-        text += "<b>Logic:</b>\n"
-        for reason in signal['reasons'][:5]:
-            # Переводим базовые термины
-            reason_en = reason.replace("Тренд", "Trend")\
-                             .replace("Поддержка", "Support")\
-                             .replace("Сопротивление", "Resistance")\
-                             .replace("Сильный", "Strong")\
-                             .replace("Слабый", "Weak")\
-                             .replace("вверх", "up")\
-                             .replace("вниз", "down")\
-                             .replace("бычий", "bullish")\
-                             .replace("медвежий", "bearish")\
-                             .replace("пробой", "breakout")\
-                             .replace("отскок", "bounce")\
-                             .replace("дивергенция", "divergence")\
-                             .replace("перекуплен", "overbought")\
-                             .replace("перепродан", "oversold")
-            text += f"• {reason_en}\n"
-        text += "\n"
-        
-        text += f"🎯 <b>Entry:</b> {entry_min:.4f} - {entry_max:.4f}\n"
-        text += f"🎯 <b>Targets:</b>\n"
-        text += f"   TP1: {signal['take_profit_1']:.4f}\n"
-        text += f"   TP2: {signal['take_profit_2']:.4f}\n"
-        text += f"   TP3: {signal['take_profit_3']:.4f}\n"
+        text = f"{type_badge}\n\n"
+        text += f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+        text += f"🎯 <b>Entry:</b> {entry_min:.4f} - {entry_max:.4f}\n\n"
+        text += f"✅ TP1: {signal['take_profit_1']:.4f}\n"
+        text += f"✅ TP2: {signal['take_profit_2']:.4f}\n"
+        text += f"✅ TP3: {signal['take_profit_3']:.4f}\n\n"
         text += f"🛡 <b>Stop:</b> {signal['stop_loss']:.4f}\n\n"
-        text += f"📊 <b>Confidence:</b> {type_badge}\n\n"
         text += "⚠️ <i>Not financial advice</i>"
     else:
-        text = f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
-        text += "<b>Логика:</b>\n"
-        for reason in signal['reasons'][:5]:
-            text += f"• {reason}\n"
-        text += "\n"
-        
-        text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n"
-        text += f"🎯 <b>Цели:</b>\n"
-        text += f"   TP1: {signal['take_profit_1']:.4f}\n"
-        text += f"   TP2: {signal['take_profit_2']:.4f}\n"
-        text += f"   TP3: {signal['take_profit_3']:.4f}\n"
+        text = f"{type_badge}\n\n"
+        text += f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+        text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n\n"
+        text += f"✅ TP1: {signal['take_profit_1']:.4f}\n"
+        text += f"✅ TP2: {signal['take_profit_2']:.4f}\n"
+        text += f"✅ TP3: {signal['take_profit_3']:.4f}\n\n"
         text += f"🛡 <b>Стоп:</b> {signal['stop_loss']:.4f}\n\n"
-        text += f"📊 <b>Confidence:</b> {type_badge}\n\n"
         text += "⚠️ <i>Не финансовый совет</i>"
     
     return text
+
+
+def format_signal_free(signal: dict, lang: str = "ru") -> str:
+    """
+    Форматирование УРЕЗАННОГО сигнала для FREE
+    - Только TP1
+    - Скрыты TP2, TP3, Stop Loss
+    - Пометка о задержке
+    """
+    side_emoji = "🟢" if signal['side'] == 'LONG' else "🔴"
+    entry_min, entry_max = signal['entry_zone']
+    
+    if lang == "en":
+        text = f"📊 FREE SIGNAL\n"
+        text += f"<i>⏰ Delayed 45 min</i>\n\n"
+        text += f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+        text += f"🎯 <b>Entry:</b> {entry_min:.4f} - {entry_max:.4f}\n\n"
+        text += f"✅ TP1: {signal['take_profit_1']:.4f}\n"
+        text += f"🔒 TP2: <i>PRO only</i>\n"
+        text += f"🔒 TP3: <i>PRO only</i>\n\n"
+        text += f"🔒 <b>Stop:</b> <i>PRO only</i>\n\n"
+        text += "⚠️ <i>Not financial advice</i>"
+    else:
+        text = f"📊 FREE СИГНАЛ\n"
+        text += f"<i>⏰ Задержка 45 мин</i>\n\n"
+        text += f"{side_emoji} <b>{signal['pair']} — {signal['side']}</b>\n\n"
+        text += f"🎯 <b>Вход:</b> {entry_min:.4f} - {entry_max:.4f}\n\n"
+        text += f"✅ TP1: {signal['take_profit_1']:.4f}\n"
+        text += f"🔒 TP2: <i>Только PRO</i>\n"
+        text += f"🔒 TP3: <i>Только PRO</i>\n\n"
+        text += f"🔒 <b>Стоп:</b> <i>Только PRO</i>\n\n"
+        text += "⚠️ <i>Не финансовый совет</i>"
+    
+    return text
+
+
+# Алиас для совместимости
+def format_signal(signal: dict, signal_type: str, lang: str = "ru") -> str:
+    return format_signal_pro(signal, signal_type, lang)
+
 
 LAST_SIGNALS = {}
 
@@ -597,7 +694,19 @@ async def signal_analyzer(bot: Bot):
                         _add_to_queue(signal, users, pair, signal_type)
                         continue
                     
-                    # ✅ Все проверки пройдены - отправляем!
+                    # ✅ Проверка на дублирование в БД
+                    if await is_duplicate_signal(pair, signal['side'], signal['price']):
+                        logger.info(f"⏭️ {pair}: Duplicate signal in DB, skipping")
+                        pairs_skipped += 1
+                        continue
+                    
+                    # ✅ Проверка лимитов из БД
+                    can_send_db, db_reason = await can_send_signal(signal_type)
+                    if not can_send_db:
+                        logger.info(f"⏸️ {pair}: {db_reason}")
+                        continue
+                    
+                    # ✅ Все проверки пройдены - отправляем PRO!
                     signals_found += 1
                     
                     # Формируем бейдж
@@ -610,39 +719,66 @@ async def signal_analyzer(bot: Bot):
                     
                     logger.info(f"🎯 SIGNAL: {pair} {signal['side']} ({type_badge}, {confidence_pct:.1f}%)")
                     
-                    # Группируем юзеров по языку
-                    from database import get_users_by_lang
-                    users_by_lang = await get_users_by_lang(users)
+                    # Сохраняем в историю
+                    history_id = await add_signal_to_history(
+                        pair, signal['side'], signal_type, 
+                        signal['price'], confidence_pct
+                    )
                     
-                    # Отправка по языкам
-                    sent_count = 0
+                    # Добавляем в active_signals для tracking
+                    entry_min, entry_max = signal['entry_zone']
+                    await add_active_signal(
+                        pair, signal['side'], signal_type, signal['price'],
+                        entry_min, entry_max,
+                        signal['take_profit_1'], signal['take_profit_2'], signal['take_profit_3'],
+                        signal['stop_loss']
+                    )
                     
-                    for lang, lang_users in users_by_lang.items():
-                        if not lang_users:
-                            continue
-                        
-                        text = format_signal(signal, signal_type, lang)
-                        
-                        for user_id in lang_users:
-                            success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
-                            if success:
-                                sent_count += 1
-                            await asyncio.sleep(BATCH_SEND_DELAY)
+                    # Получаем PRO юзеров и группируем по языку
+                    pro_users = await get_pro_users()
+                    # Фильтруем только тех кто в users (подписан на эту пару)
+                    pro_users_filtered = [u for u in pro_users if u in users]
                     
-                    if sent_count > 0:
-                        await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
-                        LAST_SIGNALS[pair] = current_time
+                    if pro_users_filtered:
+                        users_by_lang = await get_users_by_lang(pro_users_filtered)
                         
-                        # Записываем для cooldown
-                        _record_signal(pair, signal_type, signal['side'], confidence_pct)
+                        # Отправка PRO по языкам
+                        sent_count = 0
                         
-                        # Увеличиваем счётчик по типу
-                        _increment_signal_count(signal_type)
+                        for lang, lang_users in users_by_lang.items():
+                            if not lang_users:
+                                continue
+                            
+                            text = format_signal_pro(signal, signal_type, lang)
+                            
+                            for user_id in lang_users:
+                                success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                                if success:
+                                    sent_count += 1
+                                await asyncio.sleep(BATCH_SEND_DELAY)
                         
-                        logger.info(f"✅ Sent {pair} {signal['side']} ({type_badge}) to {sent_count}/{len(users)} users")
+                        logger.info(f"✅ Sent {pair} {signal['side']} ({type_badge}) to {sent_count} PRO users")
+                    else:
+                        logger.info(f"ℹ️ No PRO users for {pair}")
+                    
+                    # Логируем и обновляем счётчики
+                    await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
+                    LAST_SIGNALS[pair] = current_time
+                    
+                    # Записываем для cooldown
+                    _record_signal(pair, signal_type, signal['side'], confidence_pct)
+                    
+                    # Увеличиваем счётчик по типу
+                    _increment_signal_count(signal_type)
+                    
+                    # Увеличиваем счётчик в БД
+                    await increment_daily_count(signal_type)
             
             # Обработка очереди отложенных сигналов
             await process_signal_queue(bot)
+            
+            # Отправка FREE сигналов (с задержкой 45 мин)
+            await send_delayed_free_signals(bot)
             
             # Итог цикла
             queue_size = len(_signal_queue)
@@ -653,6 +789,294 @@ async def signal_analyzer(bot: Bot):
         
         # Пауза между циклами
         await asyncio.sleep(60)
+
+
+async def send_delayed_free_signals(bot: Bot):
+    """
+    Отправка FREE сигналов с задержкой 45 минут
+    Только MEDIUM сигналы, макс 1 в день
+    """
+    try:
+        # Проверяем лимит FREE
+        can_send, reason = await can_send_signal('MEDIUM', is_free=True)
+        if not can_send:
+            return
+        
+        # Получаем сигналы готовые к отправке FREE
+        pending_signals = await get_pending_free_signals()
+        
+        if not pending_signals:
+            return
+        
+        # Берём первый (самый старый)
+        signal_data = pending_signals[0]
+        
+        logger.info(f"📤 Sending FREE signal: {signal_data['pair']} (delayed)")
+        
+        # Получаем FREE юзеров
+        free_users = await get_free_users()
+        
+        if not free_users:
+            # Отмечаем как отправленный чтобы не застрял
+            await mark_signal_sent_to_free(signal_data['id'])
+            return
+        
+        # Формируем урезанный сигнал
+        # Нужно получить полные данные из active_signals или воссоздать
+        signal = {
+            'pair': signal_data['pair'],
+            'side': signal_data['side'],
+            'price': signal_data['entry_price'],
+            'entry_zone': (signal_data['entry_price'] * 0.99, signal_data['entry_price'] * 1.01),
+            'take_profit_1': signal_data['entry_price'] * (1.02 if signal_data['side'] == 'LONG' else 0.98),
+            'take_profit_2': signal_data['entry_price'] * (1.04 if signal_data['side'] == 'LONG' else 0.96),
+            'take_profit_3': signal_data['entry_price'] * (1.06 if signal_data['side'] == 'LONG' else 0.94),
+            'stop_loss': signal_data['entry_price'] * (0.98 if signal_data['side'] == 'LONG' else 1.02),
+        }
+        
+        # Группируем по языку
+        users_by_lang = await get_users_by_lang(free_users)
+        
+        sent_count = 0
+        
+        for lang, lang_users in users_by_lang.items():
+            if not lang_users:
+                continue
+            
+            # Урезанный сигнал
+            text = format_signal_free(signal, lang)
+            
+            for user_id in lang_users:
+                success = await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                if success:
+                    sent_count += 1
+                    
+                    # Отправляем байт-сообщение через 3 сек
+                    await asyncio.sleep(3)
+                    
+                    upsell_text = get_upsell_message(lang)
+                    kb = InlineKeyboardMarkup()
+                    btn_text = "💎 Upgrade to PRO" if lang == "en" else "💎 Перейти на PRO"
+                    kb.add(InlineKeyboardButton(btn_text, callback_data="show_pricing"))
+                    
+                    await send_message_safe(bot, user_id, upsell_text, reply_markup=kb, parse_mode="HTML")
+                
+                await asyncio.sleep(BATCH_SEND_DELAY)
+        
+        # Отмечаем как отправленный FREE
+        await mark_signal_sent_to_free(signal_data['id'])
+        
+        # Увеличиваем счётчик FREE
+        await increment_daily_count('MEDIUM', is_free=True)
+        
+        logger.info(f"✅ FREE signal sent to {sent_count} users")
+        
+    except Exception as e:
+        logger.error(f"Error sending FREE signals: {e}", exc_info=True)
+
+
+async def signal_tracker(bot: Bot):
+    """
+    Фоновая задача для отслеживания активных сигналов
+    Отправляет updates когда цена достигает entry/TP/SL
+    """
+    from config import TRACKING_ENABLED, ENTRY_ACTIVATION_TOLERANCE
+    
+    if not TRACKING_ENABLED:
+        logger.info("📊 Signal Tracker disabled")
+        return
+    
+    logger.info("📊 Signal Tracker started")
+    
+    await asyncio.sleep(120)  # Ждём загрузки данных
+    
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                active_signals = await get_active_signals()
+                
+                for sig in active_signals:
+                    pair = sig['pair']
+                    
+                    # Получаем текущую цену
+                    price_data = await fetch_price(client, pair)
+                    if not price_data:
+                        continue
+                    
+                    current_price = price_data[0]
+                    is_long = sig['side'] == 'LONG'
+                    
+                    # Проверяем вход
+                    if not sig['entry_hit']:
+                        entry_min = sig['entry_min'] or sig['entry_price'] * 0.995
+                        entry_max = sig['entry_max'] or sig['entry_price'] * 1.005
+                        
+                        if entry_min <= current_price <= entry_max:
+                            await update_signal_status(sig['id'], 'entry_hit', 1)
+                            await send_update_message(bot, pair, sig['side'], 'ENTRY', current_price)
+                            logger.info(f"🎯 {pair} Entry activated at {current_price}")
+                    
+                    # Проверяем TP1
+                    if sig['entry_hit'] and not sig['tp1_hit']:
+                        if (is_long and current_price >= sig['tp1']) or \
+                           (not is_long and current_price <= sig['tp1']):
+                            await update_signal_status(sig['id'], 'tp1_hit', 1)
+                            await send_update_message(bot, pair, sig['side'], 'TP1', current_price)
+                            logger.info(f"✅ {pair} TP1 hit at {current_price}")
+                    
+                    # Проверяем TP2
+                    if sig['tp1_hit'] and not sig['tp2_hit']:
+                        if (is_long and current_price >= sig['tp2']) or \
+                           (not is_long and current_price <= sig['tp2']):
+                            await update_signal_status(sig['id'], 'tp2_hit', 1)
+                            await send_update_message(bot, pair, sig['side'], 'TP2', current_price)
+                            logger.info(f"✅ {pair} TP2 hit at {current_price}")
+                    
+                    # Проверяем TP3 (закрытие в прибыль)
+                    if sig['tp2_hit'] and not sig['tp3_hit']:
+                        if (is_long and current_price >= sig['tp3']) or \
+                           (not is_long and current_price <= sig['tp3']):
+                            await update_signal_status(sig['id'], 'tp3_hit', 1)
+                            profit = ((sig['tp3'] / sig['entry_price']) - 1) * 100 if is_long else \
+                                     (1 - (sig['tp3'] / sig['entry_price'])) * 100
+                            await close_signal(sig['id'], profit)
+                            await send_update_message(bot, pair, sig['side'], 'TP3', current_price, profit)
+                            logger.info(f"🎉 {pair} TP3 hit! Profit: {profit:.1f}%")
+                    
+                    # Проверяем SL (закрытие в минус)
+                    if sig['entry_hit'] and not sig['sl_hit'] and not sig['tp3_hit']:
+                        if (is_long and current_price <= sig['stop_loss']) or \
+                           (not is_long and current_price >= sig['stop_loss']):
+                            await update_signal_status(sig['id'], 'sl_hit', 1)
+                            loss = ((sig['stop_loss'] / sig['entry_price']) - 1) * 100 if is_long else \
+                                   (1 - (sig['stop_loss'] / sig['entry_price'])) * 100
+                            await close_signal(sig['id'], loss)
+                            await send_update_message(bot, pair, sig['side'], 'SL', current_price, loss)
+                            logger.info(f"❌ {pair} SL hit! Loss: {loss:.1f}%")
+                    
+                    await asyncio.sleep(0.1)
+                
+                await asyncio.sleep(60)  # Проверка раз в минуту
+                
+            except Exception as e:
+                logger.error(f"Signal tracker error: {e}", exc_info=True)
+                await asyncio.sleep(60)
+
+
+async def send_update_message(bot: Bot, pair: str, side: str, update_type: str, 
+                              price: float, profit_percent: float = None):
+    """Отправить update сообщение всем PRO юзерам"""
+    try:
+        pro_users = await get_pro_users()
+        
+        if not pro_users:
+            return
+        
+        users_by_lang = await get_users_by_lang(pro_users)
+        
+        side_emoji = "🟢" if side == 'LONG' else "🔴"
+        
+        for lang, lang_users in users_by_lang.items():
+            if not lang_users:
+                continue
+            
+            if lang == "en":
+                if update_type == 'ENTRY':
+                    text = f"🎯 <b>ENTRY ACTIVATED</b>\n\n{side_emoji} {pair} {side}\n📍 Price: {price:.4f}"
+                elif update_type == 'TP1':
+                    text = f"✅ <b>TP1 HIT!</b>\n\n{side_emoji} {pair} {side}\n📍 Price: {price:.4f}\n\n💡 Move stop to entry"
+                elif update_type == 'TP2':
+                    text = f"✅ <b>TP2 HIT!</b>\n\n{side_emoji} {pair} {side}\n📍 Price: {price:.4f}\n\n💡 Take partial profit"
+                elif update_type == 'TP3':
+                    text = f"🎉 <b>TP3 HIT - FULL TARGET!</b>\n\n{side_emoji} {pair} {side}\n📍 Price: {price:.4f}\n\n💰 Profit: +{profit_percent:.1f}%"
+                elif update_type == 'SL':
+                    text = f"❌ <b>STOP LOSS HIT</b>\n\n{side_emoji} {pair} {side}\n📍 Price: {price:.4f}\n\n📉 Loss: {profit_percent:.1f}%"
+            else:
+                if update_type == 'ENTRY':
+                    text = f"🎯 <b>ВХОД АКТИВИРОВАН</b>\n\n{side_emoji} {pair} {side}\n📍 Цена: {price:.4f}"
+                elif update_type == 'TP1':
+                    text = f"✅ <b>TP1 ДОСТИГНУТ!</b>\n\n{side_emoji} {pair} {side}\n📍 Цена: {price:.4f}\n\n💡 Перенеси стоп в безубыток"
+                elif update_type == 'TP2':
+                    text = f"✅ <b>TP2 ДОСТИГНУТ!</b>\n\n{side_emoji} {pair} {side}\n📍 Цена: {price:.4f}\n\n💡 Зафиксируй часть прибыли"
+                elif update_type == 'TP3':
+                    text = f"🎉 <b>TP3 ДОСТИГНУТ - ПОЛНАЯ ЦЕЛЬ!</b>\n\n{side_emoji} {pair} {side}\n📍 Цена: {price:.4f}\n\n💰 Прибыль: +{profit_percent:.1f}%"
+                elif update_type == 'SL':
+                    text = f"❌ <b>СТОП-ЛОСС СРАБОТАЛ</b>\n\n{side_emoji} {pair} {side}\n📍 Цена: {price:.4f}\n\n📉 Убыток: {profit_percent:.1f}%"
+            
+            for user_id in lang_users:
+                await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                await asyncio.sleep(BATCH_SEND_DELAY)
+                
+    except Exception as e:
+        logger.error(f"Error sending update: {e}")
+
+
+async def no_signals_notifier(bot: Bot):
+    """
+    Отправляет сообщение 'сегодня без сигналов' если за день не было качественных сетапов
+    """
+    if not NO_SIGNALS_MESSAGE_ENABLED:
+        return
+    
+    logger.info("📭 No Signals Notifier started")
+    
+    await asyncio.sleep(300)  # Ждём 5 мин после старта
+    
+    last_notification_date = None
+    
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            today = now.strftime('%Y-%m-%d')
+            
+            # Отправляем в указанный час если ещё не отправляли сегодня
+            if now.hour == NO_SIGNALS_HOUR_UTC and last_notification_date != today:
+                signals_today = await get_signals_sent_today()
+                
+                if signals_today == 0:
+                    logger.info("📭 Sending 'no signals today' message")
+                    
+                    # Получаем всех юзеров
+                    all_users = await get_all_user_ids()
+                    users_by_lang = await get_users_by_lang(all_users)
+                    
+                    for lang, lang_users in users_by_lang.items():
+                        if not lang_users:
+                            continue
+                        
+                        if lang == "en":
+                            text = """📊 <b>Market Update</b>
+
+Today there were no quality setups that meet our criteria.
+
+This is normal — we only send signals when conditions are right.
+
+Better no trade than a bad trade. 🎯
+
+Stay tuned for tomorrow!"""
+                        else:
+                            text = """📊 <b>Обзор рынка</b>
+
+Сегодня не было качественных сетапов, соответствующих нашим критериям.
+
+Это нормально — мы отправляем сигналы только когда условия подходящие.
+
+Лучше без сделки, чем плохая сделка. 🎯
+
+Следи за обновлениями завтра!"""
+                        
+                        for user_id in lang_users:
+                            await send_message_safe(bot, user_id, text, parse_mode="HTML")
+                            await asyncio.sleep(BATCH_SEND_DELAY)
+                    
+                    last_notification_date = today
+                    logger.info(f"📭 'No signals' sent to {len(all_users)} users")
+            
+            await asyncio.sleep(3600)  # Проверка раз в час
+            
+        except Exception as e:
+            logger.error(f"No signals notifier error: {e}", exc_info=True)
+            await asyncio.sleep(3600)
 
 
 async def subscription_manager(bot: Bot):
