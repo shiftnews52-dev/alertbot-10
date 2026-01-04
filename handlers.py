@@ -351,44 +351,52 @@ async def handle_callbacks(call: types.CallbackQuery):
         except:
             pass
         
-        # Активируем триал для новых юзеров
-        from database import activate_trial, can_use_trial
+        # Проверяем новый ли юзер (paid=0)
+        is_new_user = not await is_paid(user_id)
         
-        if await can_use_trial(user_id):
-            trial_activated = await activate_trial(user_id)
+        if is_new_user:
+            # Показываем FREE welcome
+            if new_lang == "en":
+                text = "🎁 <b>WELCOME!</b>\n\n"
+                text += "You now have <b>FREE access</b> to trading signals!\n\n"
+                text += "📊 FREE includes:\n"
+                text += "• 1 MEDIUM signal per day\n"
+                text += "• 45 min delay\n"
+                text += "• Entry + TP1 only\n\n"
+                text += "💎 <b>PRO includes:</b>\n"
+                text += "• 🔥 RARE signals (best setups)\n"
+                text += "• ⚡ HIGH signals\n"
+                text += "• Instant delivery\n"
+                text += "• Full TP1/TP2/TP3 + Stop Loss\n\n"
+                text += "Start exploring! 🚀"
+            else:
+                text = "🎁 <b>ДОБРО ПОЖАЛОВАТЬ!</b>\n\n"
+                text += "Тебе доступен <b>FREE доступ</b> к торговым сигналам!\n\n"
+                text += "📊 FREE включает:\n"
+                text += "• 1 MEDIUM сигнал в день\n"
+                text += "• Задержка 45 мин\n"
+                text += "• Только Entry + TP1\n\n"
+                text += "💎 <b>PRO включает:</b>\n"
+                text += "• 🔥 RARE сигналы (лучшие сетапы)\n"
+                text += "• ⚡ HIGH сигналы\n"
+                text += "• Мгновенная доставка\n"
+                text += "• Полные TP1/TP2/TP3 + Stop Loss\n\n"
+                text += "Начинай исследовать! 🚀"
             
-            if trial_activated:
-                # Показываем приветствие с триалом
-                if new_lang == "en":
-                    text = "🎁 <b>WELCOME!</b>\n\n"
-                    text += "You've got <b>2 days FREE</b> premium access!\n\n"
-                    text += "✅ All trading signals unlocked\n"
-                    text += "✅ RARE, HIGH, MEDIUM signals\n"
-                    text += "✅ Real-time notifications\n\n"
-                    text += "Try it now and make your first profits! 💰"
-                else:
-                    text = "🎁 <b>ДОБРО ПОЖАЛОВАТЬ!</b>\n\n"
-                    text += "Тебе доступно <b>2 дня БЕСПЛАТНО</b> премиум!\n\n"
-                    text += "✅ Все торговые сигналы открыты\n"
-                    text += "✅ RARE, HIGH, MEDIUM сигналы\n"
-                    text += "✅ Уведомления в реальном времени\n\n"
-                    text += "Попробуй прямо сейчас и заработай первые деньги! 💰"
-                
-                kb = InlineKeyboardMarkup()
-                btn_text = "🚀 Let's go!" if new_lang == "en" else "🚀 Поехали!"
-                kb.add(InlineKeyboardButton(btn_text, callback_data="back_main"))
-                
-                await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
-                await call.answer()
-                return
+            kb = InlineKeyboardMarkup()
+            btn_text = "🚀 Let's go!" if new_lang == "en" else "🚀 Поехали!"
+            kb.add(InlineKeyboardButton(btn_text, callback_data="back_main"))
+            
+            await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
+            await call.answer()
+            return
         
-        # Обычный выбор языка (не триал)
+        # Существующий юзер - просто меняем язык
         if new_lang == "en":
             await call.answer("✅ Language changed to English", show_alert=True)
         else:
             await call.answer("✅ Язык изменён на русский", show_alert=True)
         
-        # Обновляем paid статус после возможной активации триала
         paid = await is_paid(user_id)
         await show_main_menu(call.message, new_lang, paid, is_start=True)
         return
