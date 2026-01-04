@@ -211,12 +211,33 @@ async def init_db():
         
         logger.info("✅ Signal tracking tables created/migrated")
         
+        # Таблица трекинг-ссылок (для рекламы)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tracking_links (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                clicks INTEGER DEFAULT 0,
+                registrations INTEGER DEFAULT 0,
+                purchases INTEGER DEFAULT 0,
+                revenue REAL DEFAULT 0,
+                created_ts INTEGER
+            )
+        """)
+        logger.info("✅ Tracking links table ready")
+        
         # Миграция: добавляем колонку username если нет
         try:
             await conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
             logger.info("Added username column to users table")
         except:
             pass  # Колонка уже существует
+        
+        # Миграция: track_code для отслеживания источника
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN track_code TEXT")
+            logger.info("Added track_code column to users table")
+        except:
+            pass
         
         # Миграция: промо-система и реф-система
         migrations = [
@@ -2073,3 +2094,158 @@ async def get_free_users() -> list:
         return [r[0] for r in rows]
     finally:
         await db_pool.release(conn)
+
+
+# ==================== TRACKING LINKS (реклама) ====================
+
+async def create_tracking_link(code: str, name: str = None) -> bool:
+    """Создать трекинг-ссылку"""
+    conn = await db_pool.acquire()
+    try:
+        created_ts = int(datetime.now().timestamp())
+        await conn.execute("""
+            INSERT OR IGNORE INTO tracking_links (code, name, created_ts)
+            VALUES (?, ?, ?)
+        """, (code.lower(), name, created_ts))
+        await conn.commit()
+        
+        # Проверяем создалась ли
+        cursor = await conn.execute(
+            "SELECT code FROM tracking_links WHERE code = ?", 
+            (code.lower(),)
+        )
+        return await cursor.fetchone() is not None
+    finally:
+        await db_pool.release(conn)
+
+
+async def delete_tracking_link(code: str) -> bool:
+    """Удалить трекинг-ссылку"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute(
+            "DELETE FROM tracking_links WHERE code = ?",
+            (code.lower(),)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_tracking_link(code: str) -> dict:
+    """Получить данные трекинг-ссылки"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            SELECT code, name, clicks, registrations, purchases, revenue, created_ts
+            FROM tracking_links WHERE code = ?
+        """, (code.lower(),))
+        row = await cursor.fetchone()
+        
+        if row:
+            return {
+                'code': row[0], 'name': row[1], 'clicks': row[2],
+                'registrations': row[3], 'purchases': row[4],
+                'revenue': row[5], 'created_ts': row[6]
+            }
+        return None
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_all_tracking_links() -> list:
+    """Получить все трекинг-ссылки"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            SELECT code, name, clicks, registrations, purchases, revenue, created_ts
+            FROM tracking_links
+            ORDER BY created_ts DESC
+        """)
+        rows = await cursor.fetchall()
+        return [{
+            'code': r[0], 'name': r[1], 'clicks': r[2],
+            'registrations': r[3], 'purchases': r[4],
+            'revenue': r[5], 'created_ts': r[6]
+        } for r in rows]
+    finally:
+        await db_pool.release(conn)
+
+
+async def track_click(code: str) -> bool:
+    """Зафиксировать клик по ссылке"""
+    conn = await db_pool.acquire()
+    try:
+        cursor = await conn.execute("""
+            UPDATE tracking_links SET clicks = clicks + 1 WHERE code = ?
+        """, (code.lower(),))
+        await conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        await db_pool.release(conn)
+
+
+async def track_registration(code: str, user_id: int) -> bool:
+    """Зафиксировать регистрацию по ссылке"""
+    conn = await db_pool.acquire()
+    try:
+        # Увеличиваем счётчик регистраций
+        await conn.execute("""
+            UPDATE tracking_links SET registrations = registrations + 1 WHERE code = ?
+        """, (code.lower(),))
+        
+        # Сохраняем track_code у юзера
+        await conn.execute("""
+            UPDATE users SET track_code = ? WHERE id = ?
+        """, (code.lower(), user_id))
+        
+        await conn.commit()
+        return True
+    finally:
+        await db_pool.release(conn)
+
+
+async def track_purchase(user_id: int, amount: float) -> bool:
+    """Зафиксировать покупку (вызывается при оплате)"""
+    conn = await db_pool.acquire()
+    try:
+        # Получаем track_code юзера
+        cursor = await conn.execute(
+            "SELECT track_code FROM users WHERE id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        
+        if row and row[0]:
+            track_code = row[0]
+            # Увеличиваем счётчик покупок и revenue
+            await conn.execute("""
+                UPDATE tracking_links 
+                SET purchases = purchases + 1, revenue = revenue + ?
+                WHERE code = ?
+            """, (amount, track_code))
+            await conn.commit()
+            return True
+        return False
+    finally:
+        await db_pool.release(conn)
+
+
+async def get_tracking_stats(code: str) -> dict:
+    """Получить статистику по ссылке с конверсией"""
+    link = await get_tracking_link(code)
+    if not link:
+        return None
+    
+    # Рассчитываем конверсии
+    click_to_reg = (link['registrations'] / link['clicks'] * 100) if link['clicks'] > 0 else 0
+    reg_to_purchase = (link['purchases'] / link['registrations'] * 100) if link['registrations'] > 0 else 0
+    click_to_purchase = (link['purchases'] / link['clicks'] * 100) if link['clicks'] > 0 else 0
+    
+    return {
+        **link,
+        'click_to_reg': click_to_reg,
+        'reg_to_purchase': reg_to_purchase,
+        'click_to_purchase': click_to_purchase
+    }
