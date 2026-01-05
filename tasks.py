@@ -1,20 +1,20 @@
 """
 tasks.py - PRO/FREE система сигналов
 
-PRO доступ:
+PRO доступ (только качественные сигналы):
 - 🔥 RARE: ≥95% — макс 1/день, сразу
 - ⚡ HIGH: 80-94% — макс 2/день, сразу
-- 📊 MEDIUM: 70-79% — сразу (полная версия)
+- ❌ MEDIUM: НЕ получают (только FREE)
+- Сообщение "рынок шумный" если 0 RARE/HIGH за день
 
 FREE доступ (постоянный):
-- 📊 MEDIUM только — макс 1/день
-- Задержка 45 минут
+- 📊 MEDIUM: 70-79% — макс 1/день
+- Задержка 45 минут после генерации
 - Скрыты: TP2, TP3, Stop Loss
 - Байт-сообщение после сигнала
 
 Signal Tracking:
 - Автоматические updates (вход, TP1, TP2, TP3, SL)
-- Сообщение "нет сигналов" если 0 за день
 """
 import time
 import asyncio
@@ -710,7 +710,7 @@ async def signal_analyzer(bot: Bot):
                         logger.info(f"⏸️ {pair}: {db_reason}")
                         continue
                     
-                    # ✅ Все проверки пройдены - отправляем PRO!
+                    # ✅ Все проверки пройдены
                     signals_found += 1
                     
                     # Формируем бейдж
@@ -738,6 +738,19 @@ async def signal_analyzer(bot: Bot):
                         signal['stop_loss']
                     )
                     
+                    # ===== PRO НЕ ПОЛУЧАЮТ MEDIUM =====
+                    # MEDIUM сигналы только для FREE (с задержкой)
+                    if signal_type == 'MEDIUM':
+                        logger.info(f"📊 {pair} MEDIUM saved for FREE only (PRO skip)")
+                        # Логируем и обновляем счётчики
+                        await log_signal(pair, signal['side'], signal['price'], signal['confidence'])
+                        LAST_SIGNALS[pair] = current_time
+                        _record_signal(pair, signal_type, signal['side'], confidence_pct)
+                        _increment_signal_count(signal_type)
+                        await increment_daily_count(signal_type)
+                        continue  # Не отправляем PRO, идём к следующей паре
+                    
+                    # ===== RARE и HIGH → отправляем PRO =====
                     # Получаем PRO юзеров и группируем по языку
                     pro_users = await get_pro_users()
                     # Фильтруем только тех кто в users (подписан на эту пару)
@@ -1044,12 +1057,13 @@ async def send_update_message(bot: Bot, pair: str, side: str, update_type: str,
 
 async def no_signals_notifier(bot: Bot):
     """
-    Отправляет сообщение 'сегодня без сигналов' если за день не было качественных сетапов
+    Отправляет PRO юзерам сообщение 'рынок шумный' если за день не было RARE/HIGH сигналов
+    FREE юзеры не получают это сообщение (они получают MEDIUM)
     """
     if not NO_SIGNALS_MESSAGE_ENABLED:
         return
     
-    logger.info("📭 No Signals Notifier started")
+    logger.info("📭 No Signals Notifier started (PRO only, RARE+HIGH check)")
     
     await asyncio.sleep(300)  # Ждём 5 мин после старта
     
@@ -1062,46 +1076,63 @@ async def no_signals_notifier(bot: Bot):
             
             # Отправляем в указанный час если ещё не отправляли сегодня
             if now.hour == NO_SIGNALS_HOUR_UTC and last_notification_date != today:
-                signals_today = await get_signals_sent_today()
+                # Проверяем только RARE и HIGH (PRO сигналы)
+                rare_today = _daily_rare_count
+                high_today = _daily_high_count
+                pro_signals_today = rare_today + high_today
                 
-                if signals_today == 0:
-                    logger.info("📭 Sending 'no signals today' message")
+                logger.info(f"📭 PRO signals today: RARE={rare_today}, HIGH={high_today}, total={pro_signals_today}")
+                
+                if pro_signals_today == 0:
+                    logger.info("📭 Sending 'noisy market' message to PRO users")
                     
-                    # Получаем всех юзеров
-                    all_users = await get_all_user_ids()
-                    users_by_lang = await get_users_by_lang(all_users)
+                    # Получаем только PRO юзеров
+                    pro_users = await get_pro_users()
+                    
+                    if not pro_users:
+                        logger.info("📭 No PRO users to notify")
+                        last_notification_date = today
+                        continue
+                    
+                    users_by_lang = await get_users_by_lang(pro_users)
                     
                     for lang, lang_users in users_by_lang.items():
                         if not lang_users:
                             continue
                         
                         if lang == "en":
-                            text = """📊 <b>Market Update</b>
+                            text = """🌊 <b>Noisy Market Today</b>
 
-Today there were no quality setups that meet our criteria.
+The market is too volatile and unpredictable today.
 
-This is normal — we only send signals when conditions are right.
+We didn't find any setups that meet our strict criteria for RARE or HIGH signals.
 
-Better no trade than a bad trade. 🎯
+This happens sometimes — it's better to stay out than to trade in chaos.
 
-Stay tuned for tomorrow!"""
+🎯 <b>No trade is better than a bad trade.</b>
+
+See you tomorrow with fresh opportunities!"""
                         else:
-                            text = """📊 <b>Обзор рынка</b>
+                            text = """🌊 <b>Сегодня рынок шумный</b>
 
-Сегодня не было качественных сетапов, соответствующих нашим критериям.
+Рынок сегодня слишком волатильный и непредсказуемый.
 
-Это нормально — мы отправляем сигналы только когда условия подходящие.
+Мы не нашли сетапов, которые соответствуют нашим строгим критериям для RARE или HIGH сигналов.
 
-Лучше без сделки, чем плохая сделка. 🎯
+Такое бывает — лучше остаться вне рынка, чем торговать в хаосе.
 
-Следи за обновлениями завтра!"""
+🎯 <b>Лучше без сделки, чем плохая сделка.</b>
+
+До завтра, с новыми возможностями!"""
                         
                         for user_id in lang_users:
                             await send_message_safe(bot, user_id, text, parse_mode="HTML")
                             await asyncio.sleep(BATCH_SEND_DELAY)
                     
                     last_notification_date = today
-                    logger.info(f"📭 'No signals' sent to {len(all_users)} users")
+                    logger.info(f"📭 'Noisy market' sent to {len(pro_users)} PRO users")
+                else:
+                    last_notification_date = today  # Помечаем день как обработанный
             
             await asyncio.sleep(3600)  # Проверка раз в час
             
