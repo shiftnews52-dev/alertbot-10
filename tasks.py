@@ -9,7 +9,7 @@ PRO доступ (только качественные сигналы):
 
 FREE доступ (постоянный):
 - 📊 MEDIUM: 70-79% — макс 1/день
-- Задержка 45 минут после генерации
+- Случайный час (10-19 UTC) + первый сигнал после него + 45 мин задержка
 - Скрыты: TP2, TP3, Stop Loss
 - Байт-сообщение после сигнала
 
@@ -808,40 +808,125 @@ async def signal_analyzer(bot: Bot):
         await asyncio.sleep(60)
 
 
+# ==================== FREE RANDOM TIME ====================
+# Случайный час для FREE сигнала (генерируется каждый день)
+_free_target_hour = None  # После этого часа первый MEDIUM пойдёт на FREE
+_free_target_date = None  # Дата для которой сгенерировано время
+_free_signal_selected_id = None  # ID выбранного сигнала для FREE
+_free_signal_selected_time = None  # Время когда выбрали сигнал
+
+
+def _generate_free_target_hour():
+    """Генерирует случайный час для FREE сигнала (10-19 UTC)"""
+    global _free_target_hour, _free_target_date
+    
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    
+    # Генерируем новый час только раз в день
+    if _free_target_date != today:
+        _free_target_hour = random.randint(10, 19)  # 10:00 - 19:59 UTC
+        _free_target_date = today
+        
+        # Сбрасываем выбранный сигнал
+        global _free_signal_selected_id, _free_signal_selected_time
+        _free_signal_selected_id = None
+        _free_signal_selected_time = None
+        
+        logger.info(f"🎲 FREE target hour for today: {_free_target_hour:02d}:00 UTC")
+    
+    return _free_target_hour
+
+
+def _select_signal_for_free(signal_id: int):
+    """Выбирает сигнал для FREE (первый после target hour)"""
+    global _free_signal_selected_id, _free_signal_selected_time
+    
+    if _free_signal_selected_id is None:
+        _free_signal_selected_id = signal_id
+        _free_signal_selected_time = time.time()
+        logger.info(f"🎯 Signal #{signal_id} selected for FREE (will send in 45 min)")
+        return True
+    return False
+
+
 async def send_delayed_free_signals(bot: Bot):
     """
-    Отправка FREE сигналов с задержкой 45 минут
-    Только MEDIUM сигналы, макс 1 в день
-    FREE получают ВСЕ MEDIUM сигналы (не по подпискам на пары)
+    Отправка FREE сигнала:
+    1. Случайный час генерируется каждый день (10-19 UTC)
+    2. Первый MEDIUM после этого часа выбирается для FREE
+    3. Через 45 минут отправляется FREE юзерам
     """
+    global _free_signal_selected_id, _free_signal_selected_time
+    
     try:
-        # Проверяем лимит FREE
+        # Генерируем/получаем целевой час для сегодня
+        target_hour = _generate_free_target_hour()
+        now = datetime.now(timezone.utc)
+        
+        # Проверяем лимит FREE (уже отправляли сегодня?)
         can_send_free, reason = await can_send_signal('MEDIUM', is_free=True)
         
-        # Получаем сигналы готовые к отправке FREE
+        if not can_send_free:
+            logger.debug(f"📭 FREE already sent today: {reason}")
+            return
+        
+        # Если ещё не наступил целевой час - ждём
+        if now.hour < target_hour:
+            logger.debug(f"📭 Waiting for target hour: {target_hour}:00 UTC (now: {now.hour}:{now.minute})")
+            return
+        
+        # Получаем pending сигналы
         pending_signals = await get_pending_free_signals()
         
-        # Логируем статус
-        logger.info(f"📭 FREE check: can_send={can_send_free}, pending={len(pending_signals) if pending_signals else 0}, reason={reason}")
-        
-        if not can_send_free:
-            return
-        
         if not pending_signals:
+            logger.debug("📭 No pending MEDIUM signals for FREE")
             return
         
-        # Берём первый (самый старый)
-        signal_data = pending_signals[0]
+        # Если сигнал ещё не выбран - выбираем первый доступный
+        if _free_signal_selected_id is None:
+            signal_data = pending_signals[0]  # Берём первый после target hour
+            _select_signal_for_free(signal_data['id'])
+            logger.info(f"📭 FREE check: target_hour={target_hour}:00, selected signal #{signal_data['id']} ({signal_data['pair']})")
+            return
         
-        logger.info(f"📤 Sending FREE signal: {signal_data['pair']} {signal_data['side']} (delayed 45min)")
+        # Проверяем прошло ли 45 минут с момента выбора
+        if _free_signal_selected_time is None:
+            return
+            
+        elapsed = time.time() - _free_signal_selected_time
+        delay_seconds = FREE_SIGNAL_DELAY  # 45 * 60 = 2700 секунд
+        
+        if elapsed < delay_seconds:
+            remaining = int((delay_seconds - elapsed) / 60)
+            logger.info(f"📭 FREE check: waiting {remaining} min more (45 min delay)")
+            return
+        
+        # Ищем выбранный сигнал
+        signal_data = None
+        for sig in pending_signals:
+            if sig['id'] == _free_signal_selected_id:
+                signal_data = sig
+                break
+        
+        if not signal_data:
+            # Сигнал мог быть удалён - берём любой доступный
+            signal_data = pending_signals[0] if pending_signals else None
+        
+        if not signal_data:
+            logger.info("📭 No signal found for FREE delivery")
+            return
+        
+        logger.info(f"📤 Sending FREE signal: {signal_data['pair']} {signal_data['side']} (45 min after selection)")
         
         # Получаем FREE юзеров
         free_users = await get_free_users()
         
         if not free_users:
             logger.info("ℹ️ No FREE users to send signal")
-            # Отмечаем как отправленный чтобы не застрял
             await mark_signal_sent_to_free(signal_data['id'])
+            await increment_daily_count('MEDIUM', is_free=True)
+            _free_signal_selected_id = None
+            _free_signal_selected_time = None
             return
         
         logger.info(f"📊 Found {len(free_users)} FREE users")
@@ -911,9 +996,11 @@ async def send_delayed_free_signals(bot: Bot):
         # Увеличиваем счётчик FREE
         await increment_daily_count('MEDIUM', is_free=True)
         
-        logger.info(f"✅ FREE signal sent to {sent_count}/{len(free_users)} users")
+        # Сбрасываем выбранный сигнал
+        _free_signal_selected_id = None
+        _free_signal_selected_time = None
         
-        logger.info(f"✅ FREE signal sent to {sent_count} users")
+        logger.info(f"✅ FREE signal sent to {sent_count}/{len(free_users)} users")
         
     except Exception as e:
         logger.error(f"Error sending FREE signals: {e}", exc_info=True)
